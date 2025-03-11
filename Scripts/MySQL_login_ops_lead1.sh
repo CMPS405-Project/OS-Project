@@ -2,17 +2,17 @@
 
 MYSQL_ROOT_USER="root"
 MYSQL_ROOT_PASSWORD="12345678"  
-DEV_USER="dev_lead1"
-DEV_PASSWORD="12345678"         
-DEV_DB="dev_database"
-DEV_SQL="dev_lead1.sql"
-DEV_AUTHEN_SQL="dev_lead1_authen.sql"
+OPS_USER="ops_lead1"
+OPS_PASSWORD="12345678"         
+OPS_DB="ops_database"
+OPS_SQL="ops_lead1.sql"
+OPS_AUTHEN_SQL="ops_lead1_authen.sql"
 LOG_FILE="/var/log/mysql_audit.log"
 
-echo "Starting setup for $DEV_USER..."
+echo "Starting setup for $OPS_USER..."
 
-mysql -u $MYSQL_ROOT_USER "-p$MYSQL_ROOT_PASSWORD" < "$DEV_SQL" 2> /dev/null
-mysql -u $DEV_USER "-p$DEV_PASSWORD" 2>/dev/null < "$DEV_AUTHEN_SQL" 2> /dev/null
+mysql -u $MYSQL_ROOT_USER "-p$MYSQL_ROOT_PASSWORD" < "$OPS_SQL" 2> /dev/null
+mysql -u $OPS_USER "-p$OPS_PASSWORD" 2>/dev/null < "$OPS_AUTHEN_SQL" 2> /dev/null
 
 
 # Ensure the LOG_FILE path is correct

@@ -20,7 +20,6 @@
 # done
 
 
-
 #!/bin/bash
 
 # Path to the log file where file activity will be recorded
