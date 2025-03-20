@@ -11,8 +11,9 @@ LOG_FILE="/var/log/mysql_audit.log"
 
 echo "Starting setup for $DEV_USER..."
 
-mysql -u $MYSQL_ROOT_USER "-p$MYSQL_ROOT_PASSWORD" < "$DEV_SQL" 2> /dev/null
-mysql -u $DEV_USER "-p$DEV_PASSWORD" 2>/dev/null < "$DEV_AUTHEN_SQL" 2> /dev/null
+mysql -u $MYSQL_ROOT_USER "-p$MYSQL_ROOT_PASSWORD" < "$DEV_SQL" 2> /dev/null # log in as root and run the sql script
+
+mysql -u $DEV_USER "-p$DEV_PASSWORD" 2>/dev/null < "$DEV_AUTHEN_SQL" 2> /dev/null # log in as root and run the sql script
 
 
 # Ensure the LOG_FILE path is correct
@@ -29,6 +30,9 @@ sudo sed -i 's/^log_output.*/log_output = FILE/' /etc/mysql/mysql.conf.d/mysqld.
 grep -q "general_log" /etc/mysql/mysql.conf.d/mysqld.cnf || echo -e "\ngeneral_log = 1" | sudo tee -a /etc/mysql/mysql.conf.d/mysqld.cnf
 grep -q "general_log_file" /etc/mysql/mysql.conf.d/mysqld.cnf || echo -e "\ngeneral_log_file = $LOG_FILE" | sudo tee -a /etc/mysql/mysql.conf.d/mysqld.cnf
 grep -q "log_output" /etc/mysql/mysql.conf.d/mysqld.cnf || echo -e "\nlog_output = FILE" | sudo tee -a /etc/mysql/mysql.conf.d/mysqld.cnf
+
+
+
 
 # Restart MySQL to apply changes
 sudo systemctl restart mysql

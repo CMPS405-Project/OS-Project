@@ -34,3 +34,14 @@ grep -q "log_output" /etc/mysql/mysql.conf.d/mysqld.cnf || echo -e "\nlog_output
 sudo systemctl restart mysql
 
 echo "Logging enabled. Logs will be stored in $LOG_FILE."
+
+
+# -----------------------------------------------------------------------------------------------------------------------
+
+# LOG_FILE="/var/log/user_login_tracker.log"
+
+# # Get the last login details
+# last_login=$(last -n 1 | head -n 1)
+
+# # Log it
+# echo "$(date) - User Login Detected: $last_login" >> "$LOG_FILE"

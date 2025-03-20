@@ -55,28 +55,21 @@
 #!/bin/bash
 
 # Log file to monitor
-AUTH_LOG="/var/log/auth.log"  # Use /var/log/secure for CentOS/RHEL
-
+AUTH_LOG="/var/log/auth.log"  
 # User to monitor
 MONITORED_USER="dev_lead1"
-
 # File to store blocked IPs
 BLOCKED_IPS_FILE="/tmp/blocked_ips.txt"
-
 # File to track lock status of user
 LOCKED_USER_FILE="/tmp/locked_users.txt"
-
 # Time to unblock IPs (24 hours)
 UNBLOCK_TIME=86400  # 24 hours in seconds
-
 # Ensure necessary files exist
 touch "$BLOCKED_IPS_FILE" "$LOCKED_USER_FILE"
-
 # Function to unblock IPs after 24 hours
 unblock_old_ips() {
     local temp_file="/tmp/temp_ips.txt"
     > "$temp_file"  # Create a temporary file
-
     while read -r line; do
         ip=$(echo "$line" | awk '{print $1}')
         timestamp=$(echo "$line" | awk '{print $2}')
@@ -92,7 +85,6 @@ unblock_old_ips() {
 
     mv "$temp_file" "$BLOCKED_IPS_FILE"
 }
-
 # Function to block an IP
 block_ip() {
     local ip=$1
@@ -107,7 +99,6 @@ block_ip() {
     iptables -A INPUT -s "$ip" -j DROP
     echo "$ip $current_time" >> "$BLOCKED_IPS_FILE"
 }
-
 # Function to lock the user account
 lock_user() {
     if grep -q "$MONITORED_USER" "$LOCKED_USER_FILE"; then
@@ -119,7 +110,6 @@ lock_user() {
     sudo usermod -L "$MONITORED_USER"
     echo "$MONITORED_USER" >> "$LOCKED_USER_FILE"
 }
-
 # Function to monitor failed login attempts
 monitor_logins() {
     tail -Fn0 "$AUTH_LOG" | while read -r line; do
@@ -141,7 +131,6 @@ monitor_logins() {
         fi
     done
 }
-
 # Run the functions
 unblock_old_ips
 monitor_logins
