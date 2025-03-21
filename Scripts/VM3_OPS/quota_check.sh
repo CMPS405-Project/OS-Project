@@ -1,90 +1,83 @@
 #!/bin/bash
 
+# Script: quota_check.sh
+# Purpose: Monitor disk usage in /shared on VM3 and enforce quotas for users
+# Author: [Your Name/Group Name]
+# Date: March 2025
+
 # Configuration
 SHARED_DIR="/shared"
 ADMIN_EMAIL="admin@qu.edu.qa"
-LOGFILE="/var/log/quota_monitor.log"
+LOG_FILE="/var/log/quota_check.log"
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
-# Quota limits (in KB for setquota compatibility)
-# 5GB = 5,242,880 KB, 6GB = 6,291,456 KB
-DEV_LEAD1_HARD=$((5 * 1024 * 1024))      # 5GB in KB
-DEV_LEAD1_SOFT=$((6 * 1024 * 1024))      # 6GB in KB
-# 3GB = 3,145,728 KB, 4GB = 4,194,304 KB
-OPS_LEAD1_HARD=$((3 * 1024 * 1024))      # 3GB in KB
-OPS_LEAD1_SOFT=$((4 * 1024 * 1024))      # 4GB in KB
+# Quota limits (in KB for comparison)
+DEV_LEAD1_HARD=$((5 * 1024 * 1024))  # 5GB = 5,242,880 KB
+DEV_LEAD1_SOFT=$((6 * 1024 * 1024))  # 6GB = 6,291,456 KB
+OPS_LEAD1_HARD=$((3 * 1024 * 1024))  # 3GB = 3,145,728 KB
+OPS_LEAD1_SOFT=$((4 * 1024 * 1024))  # 4GB = 4,194,304 KB
 
 # Users
 DEV_LEAD1="dev_lead1"
 OPS_LEAD1="ops_lead1"
 
 # Ensure log file exists
-touch "$LOGFILE" 2>/dev/null || { echo "Error: Cannot create log file"; exit 1; }
-[ -w "$LOGFILE" ] || { echo "Error: Cannot write to log file"; exit 1; }
+touch "$LOG_FILE" 2>/dev/null || { echo "Error: Cannot create log file"; exit 1; }
+[ -w "$LOG_FILE" ] || { echo "Error: Cannot write to log file"; exit 1; }
+chmod 640 "$LOG_FILE"
+
+# Ensure /shared exists
+if [ ! -d "$SHARED_DIR" ]; then
+    mkdir -p "$SHARED_DIR"
+    chmod 755 "$SHARED_DIR"
+    echo "$TIMESTAMP - Created $SHARED_DIR" >> "$LOG_FILE"
+fi
 
 # Function to send email
 send_email() {
     local subject="$1"
     local message="$2"
-    echo "$message" | mail -s "$subject" "$ADMIN_EMAIL"
+    echo "$message" | mail -s "$subject" "$ADMIN_EMAIL" 2>>"$LOG_FILE"
+    if [ $? -ne 0 ]; then
+        echo "$TIMESTAMP - Failed to send email: $subject" >> "$LOG_FILE"
+    fi
 }
-
-# Check if quota tools are installed
-if ! command -v setquota &> /dev/null; then
-    echo "$TIMESTAMP - Error: quota tools not installed" >> "$LOGFILE"
-    send_email "Quota Monitoring Error" "Quota tools not installed on $(hostname)"
-    exit 1
-fi
-
-# Check if /shared exists
-if [ ! -d "$SHARED_DIR" ]; then
-    echo "$TIMESTAMP - Error: $SHARED_DIR does not exist" >> "$LOGFILE"
-    send_email "Quota Monitoring Error" "$SHARED_DIR does not exist on $(hostname)"
-    exit 1
-fi
-
-# Set quotas (block limits only, no inode limits)
-setquota -u "$DEV_LEAD1" $DEV_LEAD1_SOFT $DEV_LEAD1_HARD 0 0 "$SHARED_DIR" 2>>"$LOGFILE"
-setquota -u "$OPS_LEAD1" $OPS_LEAD1_SOFT $OPS_LEAD1_HARD 0 0 "$SHARED_DIR" 2>>"$LOGFILE"
-
-# Check disk usage
-echo "$TIMESTAMP - Disk Usage Check for $SHARED_DIR" >> "$LOGFILE"
-du -sh "$SHARED_DIR" >> "$LOGFILE" 2>/dev/null
-
-# Check quota usage with repquota
-echo "Checking quotas..." >> "$LOGFILE"
-repquota -u "$SHARED_DIR" > /tmp/quota_report 2>/dev/null
 
 # Function to check user quota
 check_quota() {
     local user="$1"
-    local soft_limit="$2"  # in KB
-    local hard_limit="$3"  # in KB
-    
-    # Extract usage (in KB) from repquota output
-    usage=$(grep "^$user " /tmp/quota_report | awk '{print $3}')
+    local soft_limit="$2"
+    local hard_limit="$3"
+
+    # Calculate usage in /shared for the user (in KB)
+    usage=$(find "$SHARED_DIR" -user "$user" -type f -exec du -k {} + | awk '{total += $1} END {print total}')
     if [ -z "$usage" ]; then
-        echo "$TIMESTAMP - No quota data for $user" >> "$LOGFILE"
-        return
-    }
+        usage=0
+    fi
 
     # Convert to GB for readability
     usage_gb=$(echo "scale=2; $usage / 1024 / 1024" | bc)
     soft_gb=$(echo "scale=2; $soft_limit / 1024 / 1024" | bc)
     hard_gb=$(echo "scale=2; $hard_limit / 1024 / 1024" | bc)
 
-    echo "$TIMESTAMP - $user usage: ${usage_gb}GB (Soft: ${soft_gb}GB, Hard: ${hard_gb}GB)" >> "$LOGFILE"
+    echo "$TIMESTAMP - $user usage: ${usage_gb}GB (Soft: ${soft_gb}GB, Hard: ${hard_gb}GB)" >> "$LOG_FILE"
 
-    # Check if soft limit exceeded
+    # Check limits
     if [ "$usage" -ge "$soft_limit" ]; then
         message="$TIMESTAMP - WARNING: $user exceeded soft limit (${usage_gb}GB > ${soft_gb}GB) on $SHARED_DIR"
-        echo "$message" >> "$LOGFILE"
+        echo "$message" >> "$LOG_FILE"
         send_email "Quota Warning: $user" "$message on $(hostname)"
     fi
 
-    # Check if hard limit exceeded (should be enforced by system, but alert anyway)
     if [ "$usage" -ge "$hard_limit" ]; then
         message="$TIMESTAMP - CRITICAL: $user exceeded hard limit (${usage_gb}GB > ${hard_gb}GB) on $SHARED_DIR"
-        echo "$message" >> "$LOGFILE"
+        echo "$message" >> "$LOG_FILE"
         send_email "Quota Violation: $user" "$message on $(hostname)"
     fi
+}
+
+# Check quotas for each user
+check_quota "$DEV_LEAD1" $DEV_LEAD1_SOFT $DEV_LEAD1_HARD
+check_quota "$OPS_LEAD1" $OPS_LEAD1_SOFT $OPS_LEAD1_HARD
+
+exit 0

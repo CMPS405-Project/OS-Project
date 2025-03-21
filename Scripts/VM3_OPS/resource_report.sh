@@ -1,65 +1,68 @@
 #!/bin/bash
 
-# Log file location (local)
-LOGFILE="/var/log/system_monitor_$(date +%Y%m%d).log"
-TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+# Script: resource_report.sh
+# Purpose: Collect system resource metrics on VM3 and copy the report to VM1 hourly
+# Author: [Your Name/Group Name]
+# Date: March 2025
 
-# Remote VM1 details
-REMOTE_USER="user"              # VM1 username
-REMOTE_HOST="192.168.1.100"     # VM1 IP or hostname
-REMOTE_PATH="/home/user/reports" # Destination path on VM1
+# Define variables
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")  # Format: YYYYMMDD_HHMMSS (e.g., 20250321_143022)
+REPORT_FILE="/tmp/resource_report_${TIMESTAMP}.txt"  # Temporary file for the report
+VM1_IP="192.168.1.100"  # Replace with VM1's actual IP address
+VM1_USER="dev_lead1"  # User on VM1 with SCP access
+VM1_DEST_PATH="/var/operations/reports"  # Destination path on VM1
+DEST_PATH="${VM1_USER}@${VM1_IP}:${VM1_DEST_PATH}/"
 
-# Create log file if it doesn't exist
-touch "$LOGFILE" 2>/dev/null || { echo "Error: Cannot create log file"; exit 1; }
+# Create the report file
+touch "$REPORT_FILE" 2>/dev/null || { echo "Error: Cannot create report file"; exit 1; }
+chmod 640 "$REPORT_FILE"  # Read/write for owner, read for group, none for others
 
-# Check if we can write to log file
-[ -w "$LOGFILE" ] || { echo "Error: Cannot write to log file"; exit 1; }
-
-# Function to add section separator
-section() {
-    echo "==========================================" >> "$LOGFILE"
-}
-
-# Header
-echo "$TIMESTAMP - System Monitoring Report" >> "$LOGFILE"
-section
+# Start the report
+echo "===== Resource Report for VM3 (Operations Team) - $TIMESTAMP =====" > "$REPORT_FILE"
 
 # 1. Process Tree
-echo "Process Tree:" >> "$LOGFILE"
-pstree -p >> "$LOGFILE" 2>/dev/null
-section
+echo -e "\n[Process Tree]" >> "$REPORT_FILE"
+pstree -p >> "$REPORT_FILE" 2>/dev/null  # -p includes process IDs
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to collect process tree" >> "$REPORT_FILE"
+fi
 
 # 2. Zombie Processes
-echo "Zombie Processes:" >> "$LOGFILE"
-ps aux | awk '$8=="Z" {print "PID:" $2 " - " $11}' >> "$LOGFILE"
-echo "Total zombies: $(ps aux | awk '$8=="Z"' | wc -l)" >> "$LOGFILE"
-section
+echo -e "\n[Zombie Processes]" >> "$REPORT_FILE"
+ps aux | awk '$8=="Z" {print "PID: " $2 " - " $11}' >> "$REPORT_FILE" 2>/dev/null
+ZOMBIE_COUNT=$(ps aux | awk '$8=="Z"' | wc -l)
+echo "Total zombies: $ZOMBIE_COUNT" >> "$REPORT_FILE"
+if [ "$ZOMBIE_COUNT" -eq 0 ]; then
+    echo "No zombie processes found." >> "$REPORT_FILE"
+fi
 
 # 3. CPU and Memory Usage
-echo "CPU and Memory Usage:" >> "$LOGFILE"
-echo "CPU Usage:" >> "$LOGFILE"
-top -bn1 | grep "Cpu(s)" >> "$LOGFILE"
-echo "Memory Usage:" >> "$LOGFILE"
-free -h | grep "Mem:" >> "$LOGFILE"
-section
+echo -e "\n[CPU and Memory Usage]" >> "$REPORT_FILE"
+# CPU usage (using top, capturing a single snapshot)
+echo "CPU Usage:" >> "$REPORT_FILE"
+top -bn1 | head -n 3 >> "$REPORT_FILE" 2>/dev/null  # First 3 lines show CPU usage
+# Memory usage (using free)
+echo -e "\nMemory Usage:" >> "$REPORT_FILE"
+free -h >> "$REPORT_FILE" 2>/dev/null  # -h for human-readable format
 
-# 4. Top 5 Resource-Consuming Processes
-echo "Top 5 CPU-Consuming Processes:" >> "$LOGFILE"
-ps -eo pid,ppid,user,%cpu,%mem,cmd --sort=-%cpu | head -n 6 >> "$LOGFILE"
-section
+# 4. Top 5 Resource-Consuming Processes (by CPU and memory)
+echo -e "\n[Top 5 Resource-Consuming Processes]" >> "$REPORT_FILE"
+# Sort by CPU usage
+echo "By CPU Usage:" >> "$REPORT_FILE"
+ps -eo pid,ppid,user,%cpu,%mem,cmd --sort=-%cpu | head -n 6 >> "$REPORT_FILE" 2>/dev/null  # Top 5 + header
+# Sort by Memory usage
+echo -e "\nBy Memory Usage:" >> "$REPORT_FILE"
+ps -eo pid,ppid,user,%cpu,%mem,cmd --sort=-%mem | head -n 6 >> "$REPORT_FILE" 2>/dev/null  # Top 5 + header
 
-echo "Top 5 Memory-Consuming Processes:" >> "$LOGFILE"
-ps -eo pid,ppid,user,%cpu,%mem,cmd --sort=-%mem | head -n 6 >> "$LOGFILE"
-section
-
-# Log completion
-echo "Monitoring complete for $TIMESTAMP" >> "$LOGFILE"
-echo "" >> "$LOGFILE"
-
-# SCP the file to VM1
-scp "$LOGFILE" "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}" 2>>"$LOGFILE"
+# Copy the report to VM1 using SCP
+scp -o "StrictHostKeyChecking=no" "$REPORT_FILE" "$DEST_PATH" 2>/dev/null
 if [ $? -eq 0 ]; then
-    echo "$TIMESTAMP - Successfully copied report to $REMOTE_HOST:$REMOTE_PATH" >> "$LOGFILE"
+    echo "$TIMESTAMP - Successfully copied report to $VM1_IP:$VM1_DEST_PATH" | logger -t resource_report
+    # Clean up the temporary file
+    rm "$REPORT_FILE"
 else
-    echo "$TIMESTAMP - Failed to copy report to $REMOTE_HOST" >> "$LOGFILE"
+    echo "$TIMESTAMP - Failed to copy report to $VM1_IP" | logger -t resource_report
+    exit 1
 fi
+
+exit 0
