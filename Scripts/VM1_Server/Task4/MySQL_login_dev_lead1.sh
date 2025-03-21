@@ -12,27 +12,20 @@ LOG_FILE="/var/log/mysql_audit.log"
 echo "Starting setup for $DEV_USER..."
 
 mysql -u $MYSQL_ROOT_USER "-p$MYSQL_ROOT_PASSWORD" < "$DEV_SQL" 2> /dev/null # log in as root and run the sql script
-
+echo " Logging as $OPS_USER"
+echo " "
 mysql -u $DEV_USER "-p$DEV_PASSWORD" 2>/dev/null < "$DEV_AUTHEN_SQL" 2> /dev/null # log in as root and run the sql script
 
+# mysql -u $MYSQL_ROOT_USER "-p$MYSQL_ROOT_PASSWORD" -e "
+# INSTALL PLUGIN audit_log SONAME 'audit_log.so';
+# SET GLOBAL audit_log_policy = 'ALL'; " 2> /dev/null
+# sudo bash -c "echo '[mysqld]' >> /etc/mysql/my.cnf"
+# sudo bash -c "echo 'audit_log_file=$LOG_FILE' >> /etc/mysql/my.cnf"
 
 # Ensure the LOG_FILE path is correct
 sudo touch "$LOG_FILE"
 sudo chmod 664 "$LOG_FILE"
 sudo chown mysql:mysql "$LOG_FILE"
-
-# Modify MySQL configuration
-sudo sed -i 's/^general_log.*/general_log = 1/' /etc/mysql/mysql.conf.d/mysqld.cnf
-sudo sed -i 's|^general_log_file.*|general_log_file = '"$LOG_FILE"'|' /etc/mysql/mysql.conf.d/mysqld.cnf
-sudo sed -i 's/^log_output.*/log_output = FILE/' /etc/mysql/mysql.conf.d/mysqld.cnf
-
-# If parameters don't exist, append them
-grep -q "general_log" /etc/mysql/mysql.conf.d/mysqld.cnf || echo -e "\ngeneral_log = 1" | sudo tee -a /etc/mysql/mysql.conf.d/mysqld.cnf
-grep -q "general_log_file" /etc/mysql/mysql.conf.d/mysqld.cnf || echo -e "\ngeneral_log_file = $LOG_FILE" | sudo tee -a /etc/mysql/mysql.conf.d/mysqld.cnf
-grep -q "log_output" /etc/mysql/mysql.conf.d/mysqld.cnf || echo -e "\nlog_output = FILE" | sudo tee -a /etc/mysql/mysql.conf.d/mysqld.cnf
-
-
-
 
 # Restart MySQL to apply changes
 sudo systemctl restart mysql

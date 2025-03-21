@@ -12,6 +12,5 @@ SHOW databases;
 \! echo " "
 
 select table_schema AS "Database", table_name AS "Table" from information_schema.tables
-WHERE table_schema not in("information_schema","performance_schema");
 
 

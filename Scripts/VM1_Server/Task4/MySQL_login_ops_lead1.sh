@@ -12,6 +12,8 @@ LOG_FILE="/var/log/mysql_audit.log"
 echo "Starting setup for $OPS_USER..."
 
 mysql -u $MYSQL_ROOT_USER "-p$MYSQL_ROOT_PASSWORD" < "$OPS_SQL" 2> /dev/null
+echo " Logging as $OPS_USER"
+echo " "
 mysql -u $OPS_USER "-p$OPS_PASSWORD" 2>/dev/null < "$OPS_AUTHEN_SQL" 2> /dev/null
 
 
