@@ -1,4 +1,4 @@
-!/bin/bash
+#!/bin/bash
 LOGFILE="perm_changes.log"
 SEARCH_PATH="$HOME"
 touch "$LOGFILE"
