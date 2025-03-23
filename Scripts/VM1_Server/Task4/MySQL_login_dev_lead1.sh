@@ -8,26 +8,26 @@ DEV_DB="dev_database"
 DEV_SQL="dev_lead1.sql"
 DEV_AUTHEN_SQL="dev_lead1_authen.sql"
 LOG_FILE="/var/log/mysql_audit.log"
-
+echo " "
 echo "Starting setup for $DEV_USER..."
 
-mysql -u $MYSQL_ROOT_USER "-p$MYSQL_ROOT_PASSWORD" < "$DEV_SQL" 2> /dev/null # log in as root and run the sql script
-echo " Logging as $OPS_USER"
+mysql -u $MYSQL_ROOT_USER -p$MYSQL_ROOT_PASSWORD --batch --table -e "CREATE USER '$DEV_USER'@'localhost' IDENTIFIED BY '$DEV_PASSWORD'; 
+GRANT ALL PRIVILEGES ON $DEV_DB.* TO '$DEV_USER'@'localhost';
+FLUSH PRIVILEGES; 
+\! echo 'User $DEV_USER created and privileges assigned successfully.'
+\! echo 'Displaying all existing users: '
+SELECT user, host FROM mysql.user; 
+" 2> /dev/null 
 echo " "
-mysql -u $DEV_USER "-p$DEV_PASSWORD" 2>/dev/null < "$DEV_AUTHEN_SQL" 2> /dev/null # log in as root and run the sql script
-
-# mysql -u $MYSQL_ROOT_USER "-p$MYSQL_ROOT_PASSWORD" -e "
-# INSTALL PLUGIN audit_log SONAME 'audit_log.so';
-# SET GLOBAL audit_log_policy = 'ALL'; " 2> /dev/null
-# sudo bash -c "echo '[mysqld]' >> /etc/mysql/my.cnf"
-# sudo bash -c "echo 'audit_log_file=$LOG_FILE' >> /etc/mysql/my.cnf"
-
-# Ensure the LOG_FILE path is correct
-sudo touch "$LOG_FILE"
-sudo chmod 664 "$LOG_FILE"
-sudo chown mysql:mysql "$LOG_FILE"
+echo "Logging as $DEV_USER to verify authentication"
+echo " "
+mysql -u $DEV_USER -p$DEV_PASSWORD --batch --table -e "SELECT USER(), CURRENT_USER(), SESSION_USER(), @@hostname;" 2> /dev/null
+echo "Authentication verified for $DEV_USER."
+echo " "
+echo "Listing databases and their tables for $DEV_USER..."
+mysql -u $DEV_USER -p$DEV_PASSWORD --batch --table -e "select table_schema AS 'Database', table_name AS 'Table' from information_schema.tables;" 2> /dev/null
 
 # Restart MySQL to apply changes
-sudo systemctl restart mysql
+sudo systemctl restart mysql -p123
 
 echo "Logging enabled. Logs will be stored in $LOG_FILE."

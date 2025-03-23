@@ -8,7 +8,7 @@
 # Define variables
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")  # Format: YYYYMMDD_HHMMSS (e.g., 20250321_143022)
 REPORT_FILE="/tmp/resource_report_${TIMESTAMP}.txt"  # Temporary file for the report
-VM1_IP="192.168.1.100"  # Replace with VM1's actual IP address
+VM1_IP="192.168.83.128"  # Replace with VM1's actual IP address
 VM1_USER="dev_lead1"  # User on VM1 with SCP access
 VM1_DEST_PATH="/var/operations/reports"  # Destination path on VM1
 DEST_PATH="${VM1_USER}@${VM1_IP}:${VM1_DEST_PATH}/"

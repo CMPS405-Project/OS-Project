@@ -1,59 +1,4 @@
-
-
-# # Log file to monitor (adjust based on your system)
-# AUTH_LOG="/var/log/auth.log"
-
-# # User to monitor
-# MONITORED_USER="dev_lead1"
-
-# # Temporary file to store already blocked IPs
-# BLOCKED_IPS_FILE="/tmp/blocked_ips.txt"
-
-# # Ensure the blocked IPs file exists
-# touch "$BLOCKED_IPS_FILE"
-
-# # Function to block an IP
-# block_ip() {
-#     local ip=$1
-
-#     # Check if IP is already blocked
-#     if grep -q "$ip" "$BLOCKED_IPS_FILE"; then
-#         echo "IP $ip is already blocked."
-#         return
-#     fi
-
-#     # Add a firewall rule to block the IP
-#     echo "Blocking IP $ip..."
-#     iptables -A INPUT -s "$ip" -j DROP
-
-#     # Record the blocked IP
-#     echo "$ip" >> "$BLOCKED_IPS_FILE"
-# }
-
-# # Monitor the log file for failed login attempts
-# tail -Fn0 "$AUTH_LOG" | while read -r line; do
-#     # Check for failed password attempts for the monitored user
-#     if echo "$line" | grep -q "Failed password for $MONITORED_USER"; then
-#         # Extract the IP address from the log line
-#         ip=$(echo "$line" | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}")
-
-#         # Block the IP
-#         if [ -n "$ip" ]; then
-#             block_ip "$ip"
-#         else
-#             echo "Could not extract IP from the log line: $line"
-#         fi
-#     fi
-# done
-
-
-
-# ---------------------------------------------------------------------------------------------------------------------------   
-
-
-
 #!/bin/bash
-
 # Log file to monitor
 AUTH_LOG="/var/log/auth.log"  
 # User to monitor
@@ -69,33 +14,32 @@ touch "$BLOCKED_IPS_FILE" "$LOCKED_USER_FILE"
 # Function to unblock IPs after 24 hours
 unblock_old_ips() {
     local temp_file="/tmp/temp_ips.txt"
-    > "$temp_file"  # Create a temporary file
-    while read -r line; do
-        ip=$(echo "$line" | awk '{print $1}')
-        timestamp=$(echo "$line" | awk '{print $2}')
-        current_time=$(date +%s)
-
-        if (( current_time - timestamp >= UNBLOCK_TIME )); then
-            echo "Unblocking IP $ip..."
-            iptables -D INPUT -s "$ip" -j DROP
-        else
-            echo "$ip $timestamp" >> "$temp_file"
-        fi
-    done < "$BLOCKED_IPS_FILE"
-
+    touch "$temp_file"  # Create a temporary file
+    # Handle empty file case
+    if [ -s "$BLOCKED_IPS_FILE" ]; then
+        while read -r line; do
+            ip=$(echo "$line" | awk '{print $1}')
+            timestamp=$(echo "$line" | awk '{print $2}')
+            current_time=$(date +%s)
+            if (( current_time - timestamp >= UNBLOCK_TIME )); then
+                echo "Unblocking IP $ip..."
+                iptables -D INPUT -s "$ip" -j DROP
+            else
+                echo "$ip $timestamp" >> "$temp_file"
+            fi
+        done < "$BLOCKED_IPS_FILE"
+    fi
     mv "$temp_file" "$BLOCKED_IPS_FILE"
 }
 # Function to block an IP
 block_ip() {
     local ip=$1
     local current_time=$(date +%s)
-
     if grep -q "$ip" "$BLOCKED_IPS_FILE"; then
         echo "IP $ip is already blocked."
         return
     fi
-
-    echo "Blocking IP $ip..."
+    echo -e "\nBlocking IP $ip..."
     iptables -A INPUT -s "$ip" -j DROP
     echo "$ip $current_time" >> "$BLOCKED_IPS_FILE"
 }
@@ -105,24 +49,32 @@ lock_user() {
         echo "User $MONITORED_USER is already locked."
         return
     fi
-
-    echo "Locking user $MONITORED_USER due to repeated failed attempts..."
-    sudo usermod -L "$MONITORED_USER"
+    echo "Locking user $MONITORED_USER due to repeated failed attempts..."  
+    usermod -L "$MONITORED_USER"
     echo "$MONITORED_USER" >> "$LOCKED_USER_FILE"
 }
 # Function to monitor failed login attempts
 monitor_logins() {
+    # Check if log file exists and is readable
+    if [ ! -r "$AUTH_LOG" ]; then
+        echo "Error: Cannot read $AUTH_LOG. Make sure the file exists and you have permissions to read it."
+        exit 1
+    fi
+    
+    echo "Starting to monitor $AUTH_LOG for failed logins..."
     tail -Fn0 "$AUTH_LOG" | while read -r line; do
+        echo "Read line: $line"
         if echo "$line" | grep -q "Failed password for $MONITORED_USER"; then
+            echo "Detected failed login attempt for $MONITORED_USER"
             ip=$(echo "$line" | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}")
             
             if [ -n "$ip" ]; then
+                echo "Extracted IP: $ip"
                 block_ip "$ip"
-
                 # Count failed attempts in the last 10 lines
                 failed_attempts=$(grep -E "Failed password.*$MONITORED_USER" "$AUTH_LOG" | tail -n 10 | wc -l)
-
-                if (( failed_attempts >= 5 )); then
+                echo "Failed attempts in last 10 lines: $failed_attempts"
+                if [ $failed_attempts -ge 5 ]; then
                     lock_user
                 fi
             else

@@ -1,72 +1,80 @@
 #!/bin/bash
 
-# Script: login_audit.sh
-# Purpose: Monitor invalid SSH login attempts to VM1, log them, and block IPs after 3 failed attempts using iptables
+serverIp="192.168.18.15"
+maxAttempts=3
+LOG_FILE="/home/vm2/invalid_attempts.log"  # Use absolute path
+SOURCE_IP="192.168.18.18"  # VM2's IP (assumed)
+VM1_USER="dev_lead1"  # Valid user on VM1
 
-# Define variables
-LOG_FILE="/var/log/invalid_attempts.log"  # As per project requirement
-VM1_IP="192.168.x.x"  # Replace with VM1's IP address
-PRIVATE_KEY="/path/to/private_key"  # Replace with path to dev_lead1's private key
-THRESHOLD=3  # Number of failed attempts before blocking
-
-# Ensure log file exists and has secure permissions
-if [ ! -f "$LOG_FILE" ]; then
-    touch "$LOG_FILE"
-    chmod 600 "$LOG_FILE"  # Owner-only read/write
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Log file created" >> "$LOG_FILE"
-fi
-
-# Check if log file is writable
-if [ ! -w "$LOG_FILE" ]; then
-    echo "Error: Cannot write to log file $LOG_FILE"
-    exit 1
-fi
-
-# Function to log messages
-log_message() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+logInvalidAttempt() {
+    local timestamp=$(date +"%F%H:%M:%S")
+    echo "Invalid login attempt by $1 at $timestamp" >> "$LOG_FILE"
 }
 
-# Check if iptables is installed
-if ! command -v iptables &> /dev/null; then
-    log_message "ERROR: iptables not found. Please install iptables."
-    exit 1
-fi
-
-# Check if ssh is installed
-if ! command -v ssh &> /dev/null; then
-    log_message "ERROR: ssh not found. Please install openssh-client."
-    exit 1
-fi
-
-# Set up iptables rules
-log_message "Setting up iptables rules..."
-# 1. Allow established and related connections
-iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-# 2. Track SSH attempts using the 'recent' module
-iptables -A INPUT -p tcp --dport 22 -m recent --set --name sshblock --rsource
-# 3. Block IPs that exceed 3 attempts in 60 seconds (hitcount 4 means block on 4th attempt)
-iptables -A INPUT -p tcp --dport 22 -m recent --update --seconds 60 --hitcount 4 --name sshblock --rsource -j DROP
-# 4. Allow other SSH traffic
-iptables -A INPUT -p tcp --dport 22 -j ACCEPT
-# 5. (Optional) Drop all other incoming traffic not explicitly allowed
-iptables -P INPUT DROP
-# Save rules for persistence
-iptables-save > /etc/iptables/rules.v4
-log_message "iptables rules configured and saved."
-
-# Monitor SSH logs from VM1
-log_message "Starting SSH login attempt monitoring..."
-ssh -i "$PRIVATE_KEY" dev_lead1@"$VM1_IP" "sudo tail -Fn0 /var/log/auth.log" 2>>"$LOG_FILE" | while read -r line; do
-    if echo "$line" | grep -qi "invalid\|failed"; then
-        # Extract IP address from the log line
-        IP=$(echo "$line" | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b")
-        if [ -n "$IP" ]; then
-            log_message "Invalid SSH attempt from IP: $IP"
-            # Note: Blocking is handled by iptables 'recent' module
-        fi
+tryLogin() {
+    ssh -o StrictHostKeyChecking=no -o NumberOfPasswordPrompts=1 -o PubkeyAuthentication=no $1@$serverIp 2>>/dev/null
+    if [[ $? -eq 0 ]]; then
+        return 0
+    else
+        logInvalidAttempt $1
+        return 1
     fi
-done
+}
 
-# Exit cleanly
-exit 0
+# Function to check if an IP is already blocked
+is_ip_blocked() {
+    local ip=$1
+    iptables -L INPUT -v -n | grep -q "$ip"
+    return $?
+}
+
+# Function to block an IP using iptables
+block_ip() {
+    local ip=$1
+    if ! is_ip_blocked "$ip"; then
+        echo "Blocking IP $ip after $maxAttempts failed attempts" >> "$LOG_FILE"
+        sudo iptables -A INPUT -s "$ip" -j DROP
+        if [[ $? -eq 0 ]]; then
+            echo "IP $ip has been blocked" >> "$LOG_FILE"
+        else
+            echo "Error: Failed to block IP $ip with iptables" >> "$LOG_FILE"
+            return 1
+        fi
+    else
+        echo "IP $ip is already blocked" >> "$LOG_FILE"
+    fi
+    return 0
+}
+
+
+main() {
+    # Ensure script is run with sudo for iptables
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "Error: This script must be run with sudo privileges to use iptables"
+        exit 1
+    fi
+
+    attempts=0
+    rm "$LOG_FILE" 2>>/dev/null
+    rm "$TRANSFER_ERROR_LOG" 2>>/dev/null
+    while [[ $attempts -lt $maxAttempts ]]; do
+        read -p "Username: " username
+        tryLogin $username
+        if [[ $? -ne 0 ]]; then
+            echo "Wrong password/username"
+            ((attempts++))
+        else
+            echo "Access was granted"
+            exit 0
+        fi
+    done
+    echo "Unauthorized access!!"
+    block_ip "$SOURCE_IP"
+    # echo "You will be disconnected in 30 seconds...."
+    # sleep 30
+    # # Alternative logout method: kill the user's session
+    # pkill -u $USER
+}
+
+main
+
