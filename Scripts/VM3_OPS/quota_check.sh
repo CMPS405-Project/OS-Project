@@ -1,93 +1,81 @@
 #!/bin/bash
 
-# Script: quota_check.sh
-# Purpose: Monitor disk usage in /shared on VM3 and enforce quotas for users
-# Author: [Your Name/Group Name]
-# Date: March 2025
 
-# Configuration
-SHARED_DIR="/shared"
+# Hostname or IP address of VM1
+VM1_HOST="192.168.10.24"  # Replace with actual IP or hostname if needed
+
+# Username on VM1 that VM3 can SSH into
+VM1_USER="vm1_server"  # Replace with correct SSH user
+
+# Quota limits for dev_lead1
+DEV_SOFT_LIMIT=$((5 * 1024 * 1024))  # 5 GB in KB
+DEV_HARD_LIMIT=$((6 * 1024 * 1024))  # 6 GB in KB
+
+# Quota limits for ops_lead1
+OPS_SOFT_LIMIT=$((3 * 1024 * 1024))  # 3 GB in KB
+OPS_HARD_LIMIT=$((4 * 1024 * 1024))  # 4 GB in KB
+
+# Admin email to receive alerts
 ADMIN_EMAIL="admin@qu.edu.qa"
-LOG_FILE="/var/log/quota_check.log"
-TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
-# Quota limits (in KB for comparison, as per PDF requirements)
-DEV_LEAD1_HARD=$((5 * 1024 * 1024))  # 5GB = 5,242,880 KB (hard limit)
-DEV_LEAD1_SOFT=$((6 * 1024 * 1024))  # 6GB = 6,291,456 KB (warning)
-OPS_LEAD1_HARD=$((3 * 1024 * 1024))  # 3GB = 3,145,728 KB (hard limit)
-OPS_LEAD1_SOFT=$((4 * 1024 * 1024))  # 4GB = 4,194,304 KB (warning)
-
-# Users
-DEV_LEAD1="dev_lead1"
-OPS_LEAD1="ops_lead1"
-
-# Ensure log file exists
-touch "$LOG_FILE" 2>/dev/null || { echo "Error: Cannot create log file"; exit 1; }
-[ -w "$LOG_FILE" ] || { echo "Error: Cannot write to log file"; exit 1; }
-chmod 640 "$LOG_FILE"
-
-# Ensure /shared exists
-if [ ! -d "$SHARED_DIR" ]; then
-    mkdir -p "$SHARED_DIR"
-    chmod 755 "$SHARED_DIR"
-    echo "$TIMESTAMP - Created $SHARED_DIR" >> "$LOG_FILE"
-fi
-
-# Check if mail command is available
-if ! command -v mail >/dev/null; then
-    echo "$TIMESTAMP - Error: mail command not found. Please install mailutils." >> "$LOG_FILE"
-    exit 1
-fi
-
-# Function to send email
-send_email() {
-    local subject="$1"
-    local message="$2"
-    echo "$message" | mail -s "$subject" "$ADMIN_EMAIL" 2>>"$LOG_FILE"
-    if [ $? -ne 0 ]; then
-        echo "$TIMESTAMP - Failed to send email: $subject" >> "$LOG_FILE"
-    else
-        echo "$TIMESTAMP - Email sent: $subject" >> "$LOG_FILE"
-    fi
+# ----------------------------
+# Function: Get disk usage in KB for a user on /shared (VM1)
+# ----------------------------
+get_usage_kb() {
+    local user=$1
+    echo "[+] Checking disk usage for $user on VM1..."
+    ssh "$VM1_USER@$VM1_HOST" "find /shared -user $user -type f -exec du -k {} + 2>/dev/null | awk '{sum+=\$1} END {print sum}'"
 }
 
-# Function to check user quota
-check_quota() {
-    local user="$1"
-    local soft_limit="$2"
-    local hard_limit="$3"
+# ----------------------------
+# Function: Send email alert using local mail system
+# ----------------------------
+send_alert() {
+    local user=$1
+    local usage_kb=$2
+    local soft_limit=$3
+    local hard_limit=$4
+    local alert_type=$5
 
-    # Calculate usage in /shared for the user (in KB)
-    usage=$(find "$SHARED_DIR" -user "$user" -type f -exec du -k {} + 2>/dev/null | awk '{total += $1} END {print total}')
-    if [ -z "$usage" ]; then
-        usage=0
-    fi
+    echo "[!] Sending $alert_type limit alert for $user..."
 
-    # Convert to GB for readability
-    usage_gb=$(echo "scale=2; $usage / 1024 / 1024" | bc)
-    soft_gb=$(echo "scale=2; $soft_limit / 1024 / 1024" | bc)
-    hard_gb=$(echo "scale=2; $hard_limit / 1024 / 1024" | bc)
-
-    # Log usage to file and display in terminal
-    echo "$TIMESTAMP - $user usage: ${usage_gb}GB (Soft: ${soft_gb}GB, Hard: ${hard_gb}GB)" >> "$LOG_FILE"
-    echo "$TIMESTAMP - $user usage: ${usage_gb}GB (Soft: ${soft_gb}GB, Hard: ${hard_gb}GB)"
-
-    # Check limits
-    if [ "$usage" -ge "$hard_limit" ]; then
-        message="$TIMESTAMP - CRITICAL: $user exceeded hard limit (${usage_gb}GB > ${hard_gb}GB) on $SHARED_DIR"
-        echo "$message" >> "$LOG_FILE"
-        echo "$message"
-        send_email "Quota Violation: $user" "$message on $(hostname)"
-    elif [ "$usage" -ge "$soft_limit" ]; then
-        message="$TIMESTAMP - WARNING: $user exceeded soft limit (${usage_gb}GB > ${soft_gb}GB) on $SHARED_DIR"
-        echo "$message" >> "$LOG_FILE"
-        echo "$message"
-        send_email "Quota Warning: $user" "$message on $(hostname)"
-    fi
+    mail -s "[Quota $alert_type Limit] $user exceeded $alert_type limit" "$ADMIN_EMAIL" <<EOF
+User: $user
+Usage: $((usage_kb / 1024)) MB
+Soft Limit: $((soft_limit / 1024)) MB
+Hard Limit: $((hard_limit / 1024)) MB
+Alert Type: $alert_type
+Checked from VM3 on: $(date)
+EOF
 }
 
-# Check quotas for each user
-check_quota "$DEV_LEAD1" $DEV_LEAD1_SOFT $DEV_LEAD1_HARD
-check_quota "$OPS_LEAD1" $OPS_LEAD1_SOFT $OPS_LEAD1_HARD
+# ----------------------------
+# Simulated Quota Monitoring Logic
+# ----------------------------
 
-exit 0
+# Check usage for dev_lead1
+usage_dev=$(get_usage_kb dev_lead1)
+usage_dev=$(echo "$usage_dev" | grep -Eo '^[0-9]+' || echo 0)
+
+if [[ $usage_dev -gt $DEV_SOFT_LIMIT && $usage_dev -le $DEV_HARD_LIMIT ]]; then
+    echo "[!] WARNING: dev_lead1 has exceeded the soft limit of 5GB (usage: $((usage_dev / 1024)) MB)"
+    send_alert dev_lead1 "$usage_dev" $DEV_SOFT_LIMIT $DEV_HARD_LIMIT "Soft"
+elif [[ $usage_dev -gt $DEV_HARD_LIMIT ]]; then
+    echo "[!] CRITICAL: dev_lead1 has exceeded the hard limit of 6GB (usage: $((usage_dev / 1024)) MB)"
+    send_alert dev_lead1 "$usage_dev" $DEV_SOFT_LIMIT $DEV_HARD_LIMIT "Hard"
+fi
+
+# Check usage for ops_lead1
+usage_ops=$(get_usage_kb ops_lead1)
+usage_ops=$(echo "$usage_ops" | grep -Eo '^[0-9]+' || echo 0)
+
+if [[ $usage_ops -gt $OPS_SOFT_LIMIT && $usage_ops -le $OPS_HARD_LIMIT ]]; then
+    echo "[!] WARNING: ops_lead1 has exceeded the soft limit of 3GB (usage: $((usage_ops / 1024)) MB)"
+    send_alert ops_lead1 "$usage_ops" $OPS_SOFT_LIMIT $OPS_HARD_LIMIT "Soft"
+elif [[ $usage_ops -gt $OPS_HARD_LIMIT ]]; then
+    echo "[!] CRITICAL: ops_lead1 has exceeded the hard limit of 4GB (usage: $((usage_ops / 1024)) MB)"
+    send_alert ops_lead1 "$usage_ops" $OPS_SOFT_LIMIT $OPS_HARD_LIMIT "Hard"
+fi
+
+echo "[✓] Simulated quota check completed."
+
