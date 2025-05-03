@@ -1,0 +1,232 @@
+import java.io.*;
+import java.net.*;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import PriorityQueue.Task;
+
+public class Server {
+    private static PriorityQueue<Task> taskQueue = new PriorityQueue<>();
+    private static AtomicInteger taskIdCounter = new AtomicInteger(1);
+    private static final Object lock = new Object();
+    private static Map<String, LocalDateTime> clientLastSubmission = new HashMap<>();
+    private static List<String> taskHistory = new ArrayList<>();
+    private static Set<String> runningScripts = new HashSet<>();
+    private static final String SCRIPTS_DIR = "/home/vm1_server/CMPS405_Project/VM1_Server/";
+    private static final DateTimeFormatter TIMESTAMP_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+    public static void main(String args[]) {
+        try (ServerSocket server = new ServerSocket(2500)) {
+            System.out.println("Server started on port 2500");
+
+            startTaskExecution();
+
+            Set<String> clientIPs = new HashSet<>();
+            List<Socket> mySockets = new ArrayList<>();
+
+            while (true) {
+                Socket client = server.accept();
+                String clientIP = client.getInetAddress().getHostAddress();
+
+                if (!clientIPs.contains(clientIP)) {
+                    System.out.println("Client connected: " + clientIP);
+                    mySockets.add(client);
+                    clientIPs.add(clientIP);
+
+                    new ClientHandler(client).start();
+
+                    if (mySockets.size() == 2) {
+                        NetworkServiceThread N1 = new NetworkServiceThread(mySockets.get(0).getInetAddress(),
+                                mySockets.get(1).getInetAddress(), new ArrayList<>(mySockets));
+                        N1.start();
+                    }
+                } else {
+                    System.out.println("Duplicate client connection from " + clientIP + " ignored");
+                    client.close();
+                }
+            }
+        } catch (IOException ioe) {
+            System.out.println("Error: " + ioe);
+        }
+    }
+
+    public static String addTask(int serviceNumber, String clientName, int priority, Socket clientSocket) {
+        synchronized (lock) {
+            String scriptName = getScriptName(serviceNumber, clientName);
+            String rejectionMessage = null;
+            String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMATTER);
+
+            if (priority < 1 || priority > 3) {
+                rejectionMessage = "Invalid priority.";
+            }
+
+            LocalDateTime lastSubmission = clientLastSubmission.getOrDefault(clientName, LocalDateTime.MIN);
+            if (lastSubmission.plusMinutes(5).isAfter(LocalDateTime.now())) {
+                Duration wait = Duration.between(LocalDateTime.now(), lastSubmission.plusMinutes(5));
+                rejectionMessage = "Rate limit exceeded. Retry in " + wait.toMinutes() + " minute(s).";
+            }
+
+            if (scriptName == null) {
+                rejectionMessage = "Invalid service number.";
+            }
+
+            if (rejectionMessage != null) {
+                logTaskHistory(new Task(serviceNumber, scriptName != null ? scriptName : "Unknown", clientName,
+                        priority, taskIdCounter.get(), clientSocket), "REJECTED");
+                return "REJECTED;" + timestamp + ";" + rejectionMessage;
+            }
+
+            int taskId = taskIdCounter.getAndIncrement();
+            Task task = new Task(serviceNumber, scriptName, clientName, priority, taskId, clientSocket);
+            taskQueue.add(task);
+            clientLastSubmission.put(clientName, LocalDateTime.now());
+            logTaskHistory(task, "QUEUED");
+
+            return "QUEUED;" + timestamp + ";Task queued with ID " + taskId;
+        }
+    }
+
+    private static String getScriptName(int serviceNumber, String clientName) {
+        switch (serviceNumber) {
+            case 2001: return "user_setup.sh";
+            case 2002: return "dir_perms.sh";
+            case 2003: return "system_monitor.sh";
+            case 2004: return "file_audit.sh";
+            case 2005:
+                if (clientName.equalsIgnoreCase("client1")) return "MySQL_login_dev_lead1.sh";
+                else if (clientName.equalsIgnoreCase("client2")) return "MySQL_login_ops_lead1.sh";
+                return null;
+            case 2006: return "ssh_config.sh";
+            default: return null;
+        }
+    }
+
+    private static void startTaskExecution() {
+        ExecutorService executor = Executors.newFixedThreadPool(4);
+        new Thread(() -> {
+            while (true) {
+                synchronized (lock) {
+                    Task task = taskQueue.peek();
+                    if (task != null && !runningScripts.contains(task.getScriptName())) {
+                        taskQueue.poll();
+                        runningScripts.add(task.getScriptName());
+
+                        executor.submit(() -> {
+                            executeTask(task);
+                            synchronized (lock) {
+                                runningScripts.remove(task.getScriptName());
+                            }
+                        });
+                    }
+                }
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }).start();
+    }
+
+    private static void executeTask(Task task) {
+        try {
+            sendStatus(task, "EXECUTING", "TaskID " + task.getTaskId() + " has started execution.");
+            logTaskHistory(task, "EXECUTING");
+
+            ProcessBuilder pb = new ProcessBuilder("sudo", "-S", "bash", SCRIPTS_DIR + task.getScriptName());
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+
+            try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream()))) {
+                writer.write("123\n"); // Send sudo password
+                writer.flush();
+            }
+
+            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                System.out.println("[Script Output] " + line);
+            }
+
+            int exitCode = process.waitFor();
+            if (exitCode == 0) {
+                sendStatus(task, "COMPLETED", "TaskID " + task.getTaskId() + " finished successfully.");
+                logTaskHistory(task, "COMPLETED");
+            } else {
+                sendStatus(task, "ERROR", "TaskID " + task.getTaskId() + " failed with exit code " + exitCode);
+                logTaskHistory(task, "ERROR");
+            }
+        } catch (IOException | InterruptedException e) {
+            sendStatus(task, "ERROR", "TaskID " + task.getTaskId() + " execution failed: " + e.getMessage());
+            logTaskHistory(task, "ERROR");
+        }
+    }
+
+    private static void sendStatus(Task task, String status, String message) {
+        try {
+            PrintWriter out = new PrintWriter(task.getClientSocket().getOutputStream(), true);
+            out.println(status + ";" + LocalDateTime.now().format(TIMESTAMP_FORMATTER) + ";" + message);
+        } catch (IOException e) {
+            System.out.println("Error sending status to client " + task.getClientName() + ": " + e.getMessage());
+        }
+    }
+
+    private static void logTaskHistory(Task task, String status) {
+        synchronized (lock) {
+            taskHistory.add("TaskID=" + task.getTaskId() + ", Script=" + task.getScriptName()
+                    + ", Client=" + task.getClientName() + ", Status=" + status);
+        }
+    }
+
+    public static String getQueueStatus() {
+        synchronized (lock) {
+            String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMATTER);
+            StringBuilder message = new StringBuilder("Pending Tasks:");
+            int index = 1;
+            for (Task task : taskQueue) {
+                message.append("\n").append(index++).append(". ").append(task.toString());
+            }
+            if (index == 1) {
+                message.append("\nNo tasks in the queue.");
+            }
+            return "COMPLETED;" + timestamp + ";" + message.toString();
+        }
+    }
+
+    public static String cancelTask(int taskId, String clientName) {
+        synchronized (lock) {
+            String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMATTER);
+            Iterator<Task> iterator = taskQueue.iterator();
+            while (iterator.hasNext()) {
+                Task task = iterator.next();
+                if (task.getTaskId() == taskId && task.getClientName().equals(clientName)) {
+                    if (runningScripts.contains(task.getScriptName())) {
+                        return "REJECTED;" + timestamp + ";Task already running.";
+                    }
+                    iterator.remove();
+                    logTaskHistory(task, "CANCELLED");
+                    return "COMPLETED;" + timestamp + ";TaskID " + taskId + " cancelled successfully.";
+                }
+            }
+            return "REJECTED;" + timestamp + ";Task not found or not owned by client.";
+        }
+    }
+
+    public static String getTaskHistory() {
+        synchronized (lock) {
+            String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMATTER);
+            StringBuilder message = new StringBuilder("History:");
+            int index = 1;
+            for (String historyEntry : taskHistory) {
+                message.append("\n").append(index++).append(". ").append(historyEntry);
+            }
+            if (index == 1) {
+                message.append("\nNo task history available.");
+            }
+            return "COMPLETED;" + timestamp + ";" + message.toString();
+        }
+    }
+}

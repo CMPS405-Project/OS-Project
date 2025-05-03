@@ -1,0 +1,62 @@
+package PriorityQueue;
+
+import java.time.LocalDateTime;
+
+public class Task implements Comparable<Task> {
+    private final int serviceNumber;
+    private final String scriptName;
+    private final String clientName;
+    private final int priority; // 1 = High, 2 = Medium, 3 = Low
+    private final LocalDateTime timestamp;
+    private final int taskId;
+    private final String clientIpAddress;
+
+    public Task(int serviceNumber, String scriptName, String clientName, int priority, int taskId, String clientIpAddress) {
+        this.serviceNumber = serviceNumber;
+        this.scriptName = scriptName;
+        this.clientName = clientName;
+        this.priority = priority;
+        this.timestamp = LocalDateTime.now();
+        this.taskId = taskId;
+        this.clientIpAddress = clientIpAddress;
+    }
+
+    public int getServiceNumber() { return serviceNumber; }
+    public String getScriptName() { return scriptName; }
+    public String getClientName() { return clientName; }
+    public int getPriority() { return priority; }
+    public LocalDateTime getTimestamp() { return timestamp; }
+    public int getTaskId() { return taskId; }
+    public String getClientIpAddress() { return clientIpAddress; }
+
+    @Override
+    public int compareTo(Task other) {
+        // First compare by priority (lower number = higher priority)
+        if (this.priority != other.priority) {
+            return Integer.compare(this.priority, other.priority);
+        }
+        // If priorities are equal, use timestamp (FIFO)
+        return this.timestamp.compareTo(other.timestamp);
+    }
+
+    @Override
+    public String toString() {
+        return "TaskID=" + taskId + 
+               ", Script=" + scriptName + 
+               ", Priority=" + priority + 
+               ", Client=" + clientName;
+    }
+    
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) return true;
+        if (obj == null || getClass() != obj.getClass()) return false;
+        Task other = (Task) obj;
+        return taskId == other.taskId;
+    }
+    
+    @Override
+    public int hashCode() {
+        return taskId;
+    }
+}

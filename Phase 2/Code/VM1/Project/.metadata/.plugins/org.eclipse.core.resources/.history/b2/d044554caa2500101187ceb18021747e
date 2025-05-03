@@ -1,0 +1,52 @@
+import java.io.*;
+import java.net.*;
+
+public class ClientHandler extends Thread {
+    private Socket clientSocket;
+    private String clientName;
+
+    public ClientHandler(Socket socket) {
+        this.clientSocket = socket;
+    }
+
+    @Override
+    public void run() {
+        try {
+            BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+            PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true);
+
+            String input;
+            while ((input = in.readLine()) != null) {
+                String[] parts = input.split(";");
+                if (parts[0].equals("REQUEST_TASK")) {
+                    clientName = parts[2];
+                    int serviceNumber = Integer.parseInt(parts[1]);
+                    int priority = Integer.parseInt(parts[3]);
+                    String response = Server.addTask(serviceNumber, clientName, priority, clientSocket);
+                    out.println(response);
+                }
+                // Placeholder for additional commands
+                else if (parts[0].equals("QUEUE_STATUS")) {
+                    out.println("STATUS;" + java.time.LocalDateTime.now() + ";Not implemented.");
+                } 
+                else if (parts[0].startsWith("CANCEL_TASK")) {
+                    out.println("STATUS;" + java.time.LocalDateTime.now() + ";Not implemented.");
+                } 
+                else if (parts[0].equals("TASK_HISTORY")) {
+                    out.println("STATUS;" + java.time.LocalDateTime.now() + ";Not implemented.");
+                }
+            }
+        } 
+        catch (IOException e) {
+            System.out.println("Error handling client: " + e.getMessage());
+        }
+        finally {
+            try {
+                clientSocket.close();
+            } 
+            catch (IOException e) {
+                System.out.println("Error closing client socket: " + e.getMessage());
+            }
+        }
+    }
+}

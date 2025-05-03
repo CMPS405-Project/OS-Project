@@ -1,0 +1,340 @@
+import java.io.*;
+import java.net.*;
+import java.time.*;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import PriorityQueue.Task;
+
+public class Server {
+    private static PriorityQueue<Task> taskQueue = new PriorityQueue<>();
+    private static AtomicInteger taskIdCounter = new AtomicInteger(1);
+    private static final Object lock = new Object();
+    private static Map<String, LocalDateTime> clientLastSubmission = new HashMap<>();
+    private static List<String> taskHistory = new ArrayList<>();
+    private static Set<String> runningScripts = new HashSet<>();
+    // Use a configurable path or a relative path for better portability
+    private static final String SCRIPTS_DIR = System.getProperty("SCRIPTS_DIR", "/home/vm1_server/CMPS405_Project/VM1_Server/");
+    private static final DateTimeFormatter TIMESTAMP_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSSSSS");
+    // Task execution timeout in seconds
+    private static final int TASK_TIMEOUT = 60;
+    // Keep track of active client connections
+    private static final Map<String, Socket> activeClients = new ConcurrentHashMap<>();
+
+    public static void main(String args[]) {
+        ServerSocket server = null;
+        try {
+            server = new ServerSocket(2500);
+            System.out.println("Server started on port 2500");
+
+            startTaskExecution();
+            // Start periodic cleanup thread for socket management
+            startSocketCleanupThread();
+
+            while (true) {
+                Socket client = server.accept();
+                String clientIP = client.getInetAddress().getHostAddress();
+
+                if (!activeClients.containsKey(clientIP)) {
+                    System.out.println("Client connected: " + clientIP);
+                    activeClients.put(clientIP, client);
+
+                    // Start ClientHandler for each client
+                    new ClientHandler(client).start();
+
+                    // When two clients are connected, run Network.sh
+                    if (activeClients.size() == 2) {
+                        List<Socket> activeSockets = new ArrayList<>(activeClients.values());
+                        NetworkServiceThread N1 = new NetworkServiceThread(
+                                activeSockets.get(0).getInetAddress(),
+                                activeSockets.get(1).getInetAddress());
+                        N1.start();
+                    }
+                } else {
+                    System.out.println("Duplicate client connection from " + clientIP + " ignored");
+                    try {
+                        client.close();
+                    } catch (IOException e) {
+                        System.out.println("Error closing redundant client socket: " + e.getMessage());
+                    }
+                }
+            }
+        } catch (IOException ioe) {
+            System.out.println("Error: " + ioe);
+        } finally {
+            if (server != null) {
+                try {
+                    server.close();
+                } catch (IOException e) {
+                    System.out.println("Error closing server socket: " + e.getMessage());
+                }
+            }
+        }
+    }
+
+    // Method to add a task to the PriorityQueue
+    public static String addTask(int serviceNumber, String clientName, int priority, Socket clientSocket) {
+        synchronized (lock) {
+            String scriptName = getScriptName(serviceNumber, clientName);
+            String rejectionMessage = null;
+            String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMATTER);
+
+            // Validate priority
+            if (priority < 1 || priority > 3) {
+                rejectionMessage = "Invalid priority.";
+            }
+            // Check rate limit
+            LocalDateTime lastSubmission = clientLastSubmission.getOrDefault(clientName, LocalDateTime.MIN);
+            if (lastSubmission.plusMinutes(1).isAfter(LocalDateTime.now())) {
+                Duration wait = Duration.between(LocalDateTime.now(), lastSubmission.plusMinutes(1));
+                rejectionMessage = "Rate limit exceeded. Retry in " + wait.toSeconds() + " seconds.";
+            }
+            // Validate service number
+            if (scriptName == null) {
+                rejectionMessage = "Invalid service number.";
+            }
+
+            if (rejectionMessage != null) {
+                Task rejectedTask = new Task(serviceNumber, scriptName != null ? scriptName : "Unknown", clientName,
+                        priority, taskIdCounter.get(), clientSocket.getInetAddress().getHostAddress());
+                logTaskHistory(rejectedTask, "REJECTED");
+                return "REJECTED;" + timestamp + ";" + rejectionMessage;
+            }
+
+            int taskId = taskIdCounter.getAndIncrement();
+            Task task = new Task(serviceNumber, scriptName, clientName, priority, taskId, 
+                    clientSocket.getInetAddress().getHostAddress());
+            taskQueue.add(task);
+            clientLastSubmission.put(clientName, LocalDateTime.now());
+            logTaskHistory(task, "QUEUED");
+
+            return "QUEUED;" + timestamp + ";Task queued with ID " + taskId;
+        }
+    }
+
+    // Helper method to map service number to script name
+    private static String getScriptName(int serviceNumber, String clientName) {
+        switch (serviceNumber) {
+            case 2001: return "user_setup.sh";
+            case 2002: return "dir_perms.sh";
+            case 2003: return "system_monitor.sh";
+            case 2004: return "file_audit.sh";
+            case 2005:
+                if (clientName.equalsIgnoreCase("client1")) {
+                    return "MySQL_login_dev_lead1.sh";
+                } else if (clientName.equalsIgnoreCase("client2")) {
+                    return "MySQL_login_ops_lead1.sh";
+                }
+                return null;
+            case 2006: return "ssh_config.sh";
+            default: return null;
+        }
+    }
+
+    // Start task execution in a separate thread
+    private static void startTaskExecution() {
+        ExecutorService executor = Executors.newFixedThreadPool(4);
+        new Thread(() -> {
+            while (true) {
+                Task taskToExecute = null;
+                synchronized (lock) {
+                    // Atomically peek and poll if eligible
+                    if (!taskQueue.isEmpty()) {
+                        Task task = taskQueue.peek();
+                        if (task != null && !runningScripts.contains(task.getScriptName())) {
+                            taskToExecute = taskQueue.poll();
+                            runningScripts.add(taskToExecute.getScriptName());
+                        }
+                    }
+                }
+                
+                // Execute task outside the synchronized block
+                if (taskToExecute != null) {
+                    final Task finalTask = taskToExecute;
+                    executor.submit(() -> {
+                        executeTask(finalTask);
+                        synchronized (lock) {
+                            runningScripts.remove(finalTask.getScriptName());
+                        }
+                    });
+                }
+                
+                try {
+                    // Wait a reasonable time before checking again
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    System.out.println("Task execution thread interrupted: " + e.getMessage());
+                }
+            }
+        }).start();
+    }
+
+    // Execute a task with timeout
+    private static void executeTask(Task task) {
+        try {
+            // Find the client socket to send status updates
+            String clientIP = task.getClientIpAddress();
+            Socket clientSocket = activeClients.get(clientIP);
+            
+            if (clientSocket == null || clientSocket.isClosed()) {
+                logTaskHistory(task, "ERROR");
+                System.out.println("Client disconnected, can't execute task: " + task.getTaskId());
+                return;
+            }
+            
+            sendStatus(clientSocket, task, "EXECUTING", "TaskID " + task.getTaskId() + " has started execution.");
+            logTaskHistory(task, "EXECUTING");
+
+            ProcessBuilder pb = new ProcessBuilder("bash", SCRIPTS_DIR + task.getScriptName());
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+
+            // Set up timeout handling
+            ExecutorService executorService = Executors.newSingleThreadExecutor();
+            Future<Integer> future = executorService.submit(() -> {
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        System.out.println("[Script Output] " + line);
+                    }
+                    return process.waitFor();
+                }
+            });
+
+            try {
+                int exitCode = future.get(TASK_TIMEOUT, TimeUnit.SECONDS);
+
+                if (exitCode == 0) {
+                    sendStatus(clientSocket, task, "COMPLETED", "TaskID " + task.getTaskId() + " finished successfully.");
+                    logTaskHistory(task, "COMPLETED");
+                } else {
+                    sendStatus(clientSocket, task, "ERROR", "TaskID " + task.getTaskId() + " encountered execution failure (exit code: " + exitCode + ").");
+                    logTaskHistory(task, "ERROR");
+                }
+            } catch (TimeoutException e) {
+                future.cancel(true);
+                process.destroyForcibly();
+                sendStatus(clientSocket, task, "ERROR", "TaskID " + task.getTaskId() + " timed out after " + TASK_TIMEOUT + " seconds.");
+                logTaskHistory(task, "ERROR");
+            } catch (ExecutionException e) {
+                sendStatus(clientSocket, task, "ERROR", "TaskID " + task.getTaskId() + " execution failed: " + e.getCause().getMessage());
+                logTaskHistory(task, "ERROR");
+            }
+            
+            executorService.shutdownNow();
+        } catch (IOException | InterruptedException e) {
+            Socket clientSocket = activeClients.get(task.getClientIpAddress());
+            if (clientSocket != null && !clientSocket.isClosed()) {
+                sendStatus(clientSocket, task, "ERROR", "TaskID " + task.getTaskId() + " execution failed: " + e.getMessage());
+            }
+            logTaskHistory(task, "ERROR");
+        }
+    }
+
+    // Send status update to client
+    private static void sendStatus(Socket clientSocket, Task task, String status, String message) {
+        try {
+            if (clientSocket != null && !clientSocket.isClosed()) {
+                PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true);
+                out.println(status + ";" + LocalDateTime.now().format(TIMESTAMP_FORMATTER) + ";" + message);
+            }
+        } catch (IOException e) {
+            System.out.println("Error sending status to client " + task.getClientName() + ": " + e.getMessage());
+        }
+    }
+
+    // Log task history
+    private static void logTaskHistory(Task task, String status) {
+        synchronized (lock) {
+            taskHistory.add(LocalDateTime.now() + ": TaskID=" + task.getTaskId() + ", Script=" + task.getScriptName()
+                    + ", Client=" + task.getClientName() + ", Status=" + status);
+        }
+    }
+
+    // Get current queue status
+    public static String getQueueStatus() {
+        synchronized (lock) {
+            String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMATTER);
+            StringBuilder message = new StringBuilder();
+            message.append("Pending Tasks:\n");
+            int index = 1;
+            for (Task task : taskQueue) {
+                message.append(index).append(". ").append(task.toString()).append("\n");
+                index++;
+            }
+            if (taskQueue.isEmpty()) {
+                message.append("No pending tasks.");
+            }
+            return "COMPLETED;" + timestamp + ";" + message.toString();
+        }
+    }
+
+    // Cancel a task by ID
+    public static String cancelTask(int taskId, String clientName) {
+        synchronized (lock) {
+            String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMATTER);
+            Iterator<Task> iterator = taskQueue.iterator();
+            while (iterator.hasNext()) {
+                Task task = iterator.next();
+                if (task.getTaskId() == taskId && task.getClientName().equals(clientName)) {
+                    if (runningScripts.contains(task.getScriptName())) {
+                        return "REJECTED;" + timestamp + ";Task already running.";
+                    }
+                    iterator.remove();
+                    logTaskHistory(task, "CANCELLED");
+                    return "COMPLETED;" + timestamp + ";TaskID " + taskId + " cancelled successfully.";
+                }
+            }
+            return "REJECTED;" + timestamp + ";Task not found or not owned by client.";
+        }
+    }
+
+    // Get task history
+    public static String getTaskHistory() {
+        synchronized (lock) {
+            String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMATTER);
+            StringBuilder message = new StringBuilder();
+            message.append("History:\n");
+            int index = 1;
+            for (String historyEntry : taskHistory) {
+                message.append(index).append(". ").append(historyEntry).append("\n");
+                index++;
+            }
+            if (taskHistory.isEmpty()) {
+                message.append("No task history available.");
+            }
+            return "COMPLETED;" + timestamp + ";" + message.toString();
+        }
+    }
+    
+    // Handle client disconnect
+    public static void clientDisconnected(String clientIp) {
+        activeClients.remove(clientIp);
+        System.out.println("Client disconnected: " + clientIp);
+    }
+    
+    // Start a thread to periodically check for closed sockets
+    private static void startSocketCleanupThread() {
+        new Thread(() -> {
+            while (true) {
+                try {
+                    // Check all client sockets
+                    for (Map.Entry<String, Socket> entry : activeClients.entrySet()) {
+                        Socket socket = entry.getValue();
+                        if (socket.isClosed()) {
+                            activeClients.remove(entry.getKey());
+                            System.out.println("Removed closed socket for client: " + entry.getKey());
+                        }
+                    }
+                    Thread.sleep(30000); // Check every 30 seconds
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    System.out.println("Socket cleanup thread interrupted: " + e.getMessage());
+                }
+            }
+        }).start();
+    }
+}

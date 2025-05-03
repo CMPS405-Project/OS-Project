@@ -1,0 +1,224 @@
+import java.io.*;
+import java.net.*;
+import java.time.LocalDateTime;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import PriorityQueue.Task;
+
+public class Server {
+    private static ArrayList<Socket> mySockets = new ArrayList<>();
+    private static PriorityQueue<Task> taskQueue = new PriorityQueue<>();
+    private static AtomicInteger taskIdCounter = new AtomicInteger(1);
+    private static final Object lock = new Object();
+    private static Map<String, LocalDateTime> clientLastSubmission = new HashMap<>();
+    private static List<String> taskHistory = new ArrayList<>();
+    private static Set<String> runningScripts = new HashSet<>();
+
+    public static void main(String args[]) {
+        try {
+            ServerSocket server = new ServerSocket(2500);
+            System.out.println("Server started on port 2500");
+
+            // Start task execution thread
+            startTaskExecution();
+
+            while (true) {
+                do {
+                    if (mySockets.size() < 2)
+                        System.out.println("We Need Two clients to connect");
+                    Socket client = server.accept();
+                    System.out.println("Client connected: " + client.getInetAddress().getHostAddress());
+                    mySockets.add(client);
+
+                    // Start a thread to handle client requests
+                    new ClientHandler(client).start();
+                } while (mySockets.size() < 2);
+
+                System.out.println("Testing the connection to both clients");
+
+                // Execute Network.sh to validate connectivity
+                NetworkServiceThread N1 = new NetworkServiceThread(mySockets.get(0).getInetAddress(),mySockets.get(1).getInetAddress(),new ArrayList<>(mySockets));
+                N1.start();
+
+                // Clear the sockets list for the next batch of connections
+                mySockets.clear();
+            }
+        }
+        catch (IOException ioe) {
+            System.out.println("Error: " + ioe);
+        }
+    }
+
+    // Method to add a task to the PriorityQueue
+    public static String addTask(int serviceNumber, String clientName, int priority, Socket clientSocket) {
+        synchronized (lock) {
+            String scriptName = getScriptName(serviceNumber);
+            String rejectionMessage = null;
+
+            // Validate priority
+            if (priority < 1 || priority > 3) {
+                rejectionMessage = "REJECTED: Invalid priority.";
+            }
+            // Check rate limit
+            LocalDateTime lastSubmission = clientLastSubmission.getOrDefault(clientName, LocalDateTime.MIN);
+            if (lastSubmission.plusMinutes(5).isAfter(LocalDateTime.now())) {
+                rejectionMessage = "REJECTED: Rate limit exceeded.";
+            }
+            // Validate service number
+            if (scriptName == null) {
+                rejectionMessage = "REJECTED: Invalid service number.";
+            }
+
+            if (rejectionMessage != null) {
+                // Log rejected task
+                logTaskHistory(new Task(serviceNumber, scriptName != null ? scriptName : "Unknown", clientName, priority, taskIdCounter.get(), clientSocket), "REJECTED");
+                return "STATUS;" + LocalDateTime.now() + ";" + rejectionMessage;
+            }
+
+            int taskId = taskIdCounter.getAndIncrement();
+            Task task = new Task(serviceNumber, scriptName, clientName, priority, taskId, clientSocket);
+            taskQueue.add(task);
+
+            clientLastSubmission.put(clientName, LocalDateTime.now());
+            logTaskHistory(task, "QUEUED");
+
+            return "STATUS;" + LocalDateTime.now() + ";QUEUED: Task queued with ID " + taskId;
+        }
+    }
+
+    // Helper method to map service number to script name
+    private static String getScriptName(int serviceNumber) {
+        switch (serviceNumber) {
+            case 2001: return "user_setup.sh";
+            case 2002: return "dir_perms.sh";
+            case 2003: return "system_monitor.sh";
+            case 2004: return "file_audit.sh";
+            case 2005: return "MySQL_login_<USER_NAME>.sh";
+            default: return null;
+        }
+    }
+
+    // Start task execution in a separate thread
+    private static void startTaskExecution() {
+        ExecutorService executor = Executors.newFixedThreadPool(4);
+        new Thread(() -> {
+            while (true) {
+                synchronized (lock) {
+                    Task task = taskQueue.peek();
+                    if (task != null && !runningScripts.contains(task.getScriptName())) {
+                        taskQueue.poll();
+                        runningScripts.add(task.getScriptName());
+
+                        executor.submit(() -> {
+                            executeTask(task);
+                            synchronized (lock) {
+                                runningScripts.remove(task.getScriptName());
+                            }
+                        });
+                    }
+                }
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }).start();
+    }
+
+    // Execute a task and handle status updates
+    private static void executeTask(Task task) {
+        try {
+            sendStatus(task, "EXECUTING", "TaskID " + task.getTaskId() + " has started execution.");
+            logTaskHistory(task, "EXECUTING");
+
+            ProcessBuilder pb = new ProcessBuilder("bash", task.getScriptName());
+            Process process = pb.start();
+            int exitCode = process.waitFor();
+
+            if (exitCode == 0) {
+                sendStatus(task, "COMPLETED", "TaskID " + task.getTaskId() + " finished successfully.");
+                logTaskHistory(task, "COMPLETED");
+            } else {
+                sendStatus(task, "ERROR", "TaskID " + task.getTaskId() + " encountered execution failure.");
+                logTaskHistory(task, "ERROR");
+            }
+        } catch (IOException | InterruptedException e) {
+            sendStatus(task, "ERROR", "TaskID " + task.getTaskId() + " encountered execution failure: " + e.getMessage());
+            logTaskHistory(task, "ERROR");
+        }
+    }
+
+    // Send status update to client
+    private static void sendStatus(Task task, String status, String message) {
+        try {
+            PrintWriter out = new PrintWriter(task.getClientSocket().getOutputStream(), true);
+            out.println("STATUS;" + LocalDateTime.now() + ";" + status + ": " + message);
+        } catch (IOException e) {
+            System.out.println("Error sending status to client " + task.getClientName() + ": " + e.getMessage());
+        }
+    }
+
+    // Log task history
+    private static void logTaskHistory(Task task, String status) {
+        synchronized (lock) {
+            taskHistory.add("TaskID=" + task.getTaskId() + ", Script=" + task.getScriptName() +
+                            ", Client=" + task.getClientName() + ", Status=" + status);
+        }
+    }
+
+    // Get current queue status
+    public static String getQueueStatus() {
+        synchronized (lock) {
+            StringBuilder response = new StringBuilder();
+            response.append("STATUS;").append(LocalDateTime.now()).append(";Pending Tasks:\n");
+            int index = 1;
+            for (Task task : taskQueue) {
+                response.append(index).append(". ").append(task.toString()).append("\n");
+                index++;
+            }
+            if (taskQueue.isEmpty()) {
+                response.append("No pending tasks.");
+            }
+            return response.toString();
+        }
+    }
+
+    // Cancel a task by ID
+    public static String cancelTask(int taskId, String clientName) {
+        synchronized (lock) {
+            Iterator<Task> iterator = taskQueue.iterator();
+            while (iterator.hasNext()) {
+                Task task = iterator.next();
+                if (task.getTaskId() == taskId && task.getClientName().equals(clientName)) {
+                    if (runningScripts.contains(task.getScriptName())) {
+                        return "STATUS;" + LocalDateTime.now() + ";REJECTED: Task already running.";
+                    }
+                    iterator.remove();
+                    logTaskHistory(task, "CANCELLED");
+                    return "STATUS;" + LocalDateTime.now() + ";TaskID " + taskId + " cancelled successfully.";
+                }
+            }
+            return "STATUS;" + LocalDateTime.now() + ";REJECTED: Task not found or not owned by client.";
+        }
+    }
+
+    // Get task history
+    public static String getTaskHistory() {
+        synchronized (lock) {
+            StringBuilder response = new StringBuilder();
+            response.append("STATUS;").append(LocalDateTime.now()).append(";History:\n");
+            int index = 1;
+            for (String historyEntry : taskHistory) {
+                response.append(index).append(". ").append(historyEntry).append("\n");
+                index++;
+            }
+            if (taskHistory.isEmpty()) {
+                response.append("No task history available.");
+            }
+            return response.toString();
+        }
+    }
+}

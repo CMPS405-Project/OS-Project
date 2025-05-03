@@ -1,0 +1,84 @@
+package PriorityQueue;
+
+import java.time.LocalDateTime;
+
+public class Task implements Comparable<Task> {
+	private int serviceNumber;
+	private String scriptName;
+	private String clientName;
+	private int priority;
+	private LocalDateTime timestamp;
+	private int taskID;
+	
+	
+
+	public Task(int serviceNumber, String scriptName, String clientName, int priority, int taskID) {
+		super();
+		this.serviceNumber = serviceNumber;
+		this.scriptName = scriptName;
+		this.clientName = clientName;
+		this.priority = priority;
+        this.timestamp = LocalDateTime.now();
+		this.taskID = taskID;
+	}
+
+	public int getServiceNumber() {
+		return serviceNumber;
+	}
+
+	public void setServiceNumber(int serviceNumber) {
+		this.serviceNumber = serviceNumber;
+	}
+
+	public String getScriptName() {
+		return scriptName;
+	}
+
+	public void setScriptName(String scriptName) {
+		this.scriptName = scriptName;
+	}
+
+	public String getClientName() {
+		return clientName;
+	}
+
+	public void setClientName(String clientName) {
+		this.clientName = clientName;
+	}
+
+	public int getPriority() {
+		return priority;
+	}
+
+	public void setPriority(int priority) {
+		this.priority = priority;
+	}
+
+	public LocalDateTime getTimestamp() {
+		return timestamp;
+	}
+
+	public void setTimestamp(LocalDateTime timestamp) {
+		this.timestamp = timestamp;
+	}
+
+	public int getTaskID() {
+		return taskID;
+	}
+
+	public void setTaskID(int taskID) {
+		this.taskID = taskID;
+	}
+
+	@Override
+	public int compareTo(Task other) {								// ensure tasks are sorted by priority, if they have the same priority, it looks for the timestamp
+		if (this.priority != other.priority) {
+			return Integer.compare(this.priority, other.priority);
+		}
+		return this.timestamp.compareTo(other.timestamp);
+	}
+	@Override
+    public String toString() {
+        return "TaskID=" + taskID + ", Script=" + scriptName + ", Priority=" + priority + ", Client=" + clientName;
+    }
+}

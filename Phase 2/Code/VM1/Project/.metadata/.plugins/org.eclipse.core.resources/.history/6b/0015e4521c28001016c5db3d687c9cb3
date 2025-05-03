@@ -1,0 +1,103 @@
+import java.io.*;
+import java.net.*;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+
+public class ClientHandler extends Thread {
+    private Socket clientSocket;
+    private String clientName;
+    private static final DateTimeFormatter TIMESTAMP_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSSSSS");
+
+    public ClientHandler(Socket socket) {
+        this.clientSocket = socket;
+    }
+
+    @Override
+    public void run() {
+        BufferedReader from_client = null;
+        PrintWriter to_client = null;
+        
+        try {
+            from_client = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+            to_client = new PrintWriter(clientSocket.getOutputStream(), true);
+
+            String input;
+            while ((input = from_client.readLine()) != null) {
+                try {
+                    String[] parts = input.split(";");
+                    String response;
+                    
+                    switch (parts[0]) {
+                        case "REQUEST_TASK":
+                            if (parts.length == 4) {
+                                clientName = parts[2];
+                                int serviceNumber = Integer.parseInt(parts[1]);
+                                int priority = Integer.parseInt(parts[3]);
+                                response = Server.addTask(serviceNumber, clientName, priority, clientSocket);
+                                to_client.println(response);
+                            } else {
+                                sendRejection(to_client, "Invalid REQUEST_TASK format. Expected: REQUEST_TASK;serviceNumber;clientName;priority");
+                            }
+                            break;
+                            
+                        case "QUEUE_STATUS":
+                            response = Server.getQueueStatus();
+                            to_client.println(response);
+                            break;
+                            
+                        case "CANCEL_TASK":
+                            if (parts.length == 3) {
+                                if (clientName == null) {
+                                    sendRejection(to_client, "Client name not set. Send REQUEST_TASK first.");
+                                    continue;
+                                }
+                                int taskId = Integer.parseInt(parts[1]);
+                                response = Server.cancelTask(taskId, parts[2]);
+                                to_client.println(response);
+                            } else {
+                                sendRejection(to_client, "Invalid CANCEL_TASK format. Expected: CANCEL_TASK;taskId;clientName");
+                            }
+                            break;
+                            
+                        case "TASK_HISTORY":
+                            response = Server.getTaskHistory();
+                            to_client.println(response);
+                            break;
+                            
+                        default:
+                            sendRejection(to_client, "Invalid command. Supported commands: REQUEST_TASK, QUEUE_STATUS, CANCEL_TASK, TASK_HISTORY");
+                            break;
+                    }
+                } catch (NumberFormatException e) {
+                    sendRejection(to_client, "Invalid numeric format: " + e.getMessage());
+                } catch (ArrayIndexOutOfBoundsException e) {
+                    sendRejection(to_client, "Missing parameters in command");
+                } catch (Exception e) {
+                    sendRejection(to_client, "Error processing command: " + e.getMessage());
+                }
+            }
+        } catch (IOException e) {
+            System.out.println("Error handling client: " + e.getMessage());
+        } finally {
+            try {
+                if (from_client != null) from_client.close();
+                if (to_client != null) to_client.close();
+                
+                // Notify server about client disconnection
+                if (clientSocket != null && !clientSocket.isClosed()) {
+                    Server.clientDisconnected(clientSocket.getInetAddress().getHostAddress());
+                    clientSocket.close();
+                }
+            } catch (IOException e) {
+                System.out.println("Error closing client resources: " + e.getMessage());
+            }
+        }
+    }
+    
+    // Helper method to send rejection messages with consistent format
+    private void sendRejection(PrintWriter writer, String message) {
+        if (writer != null) {
+            writer.println("REJECTED;" + LocalDateTime.now().format(TIMESTAMP_FORMATTER) + ";" + message);
+        }
+    }
+}

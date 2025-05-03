@@ -1,0 +1,225 @@
+import java.io.*;
+import java.net.Socket;
+import java.util.*;
+
+public class Client2 {
+    private static final String CLIENT_NAME = "Client2";
+    private static final String[] LOCAL_SCRIPTS = {"resource_report.sh", "quota_check.sh"};
+    private static final String SCRIPTS_DIR = "/home/vm3_ops/CMPS405_Project/";
+    private static final int[] SERVICE_NUMBERS = {2001, 2002, 2003, 2004, 2005};
+    private static long lastRequestMillis = 0; // FIXED: Removed unused lastRequestTime
+    private static final Random random = new Random();
+    private static final List<Integer> taskIds = new ArrayList<>();
+
+    public static void main(String[] args) {
+        try (Socket socket = new Socket("192.168.6.128", 2500)) {
+            System.out.println("Connected to server at 192.168.6.128:2500");
+
+            BufferedReader fromServer = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            PrintWriter toServer = new PrintWriter(socket.getOutputStream(), true);
+
+            new Thread(() -> runLocalScripts()).start();
+            new Thread(() -> sendAutomatedRequests(toServer, fromServer)).start();
+            new Thread(() -> sendAutomatedStatusAndHistory(toServer, fromServer)).start();
+            new Thread(() -> sendAutomatedCancelTask(toServer, fromServer)).start();
+
+            while (true) {
+                try {
+                    Thread.sleep(60_000);
+                } catch (InterruptedException e) {
+                    System.out.println("Main thread interrupted: " + e.getMessage());
+                    break;
+                }
+            }
+        } catch (IOException e) {
+            System.out.println("Error in Client2: " + e.getMessage());
+        }
+    }
+
+    private static void sendAutomatedRequests(PrintWriter toServer, BufferedReader fromServer) {
+        while (true) {
+            try {
+                long currentMillis = System.currentTimeMillis();
+                if (currentMillis - lastRequestMillis >= 300_000) {
+                    int serviceNumber = SERVICE_NUMBERS[random.nextInt(SERVICE_NUMBERS.length)];
+                    int priority = random.nextInt(3) + 1;
+                    String command = String.format("REQUEST_TASK;%d;%s;%d", serviceNumber, CLIENT_NAME, priority);
+                    synchronized (toServer) {
+                        System.out.println("Sending automated request: " + command);
+                        toServer.println(command);
+                    }
+                    lastRequestMillis = currentMillis;
+
+                    String response;
+                    synchronized (fromServer) {
+                        response = fromServer.readLine();
+                    }
+                    if (response != null) {
+                        processServerResponse(response);
+                    } else {
+                        System.out.println("No response for automated request.");
+                    }
+                }
+                Thread.sleep(60_000);
+            } catch (IOException e) {
+                System.out.println("Error in automated request: " + e.getMessage());
+                break;
+            } catch (InterruptedException e) {
+                System.out.println("Automated request thread interrupted: " + e.getMessage());
+                break;
+            }
+        }
+    }
+
+    private static void sendAutomatedStatusAndHistory(PrintWriter toServer, BufferedReader fromServer) {
+        while (true) {
+            try {
+                String command = "QUEUE_STATUS";
+                synchronized (toServer) {
+                    System.out.println("Sending automated request: " + command);
+                    toServer.println(command);
+                }
+                String response;
+                synchronized (fromServer) {
+                    response = fromServer.readLine();
+                }
+                if (response != null) {
+                    processServerResponse(response);
+                } else {
+                    System.out.println("No response for QUEUE_STATUS.");
+                }
+
+                command = "TASK_HISTORY";
+                synchronized (toServer) {
+                    System.out.println("Sending automated request: " + command);
+                    toServer.println(command);
+                }
+                synchronized (fromServer) {
+                    response = fromServer.readLine();
+                }
+                if (response != null) {
+                    processServerResponse(response);
+                } else {
+                    System.out.println("No response for TASK_HISTORY.");
+                }
+
+                Thread.sleep(600_000);
+            } catch (IOException e) {
+                System.out.println("Error in automated status/history request: " + e.getMessage());
+                break;
+            } catch (InterruptedException e) {
+                System.out.println("Automated status/history thread interrupted: " + e.getMessage());
+                break;
+            }
+        }
+    }
+
+    private static void sendAutomatedCancelTask(PrintWriter toServer, BufferedReader fromServer) {
+        while (true) {
+            try {
+                synchronized (taskIds) { // FIXED: Synchronized taskIds access
+                    if (!taskIds.isEmpty()) {
+                        int taskId = taskIds.get(random.nextInt(taskIds.size()));
+                        String command = "CANCEL_TASK;" + taskId + ";" + CLIENT_NAME; // FIXED: Added clientName
+                        synchronized (toServer) {
+                            System.out.println("Sending automated request: " + command);
+                            toServer.println(command);
+                        }
+                        String response;
+                        synchronized (fromServer) {
+                            response = fromServer.readLine();
+                        }
+                        if (response != null) {
+                            processServerResponse(response);
+                        } else {
+                            System.out.println("No response for CANCEL_TASK.");
+                        }
+                    }
+                }
+                Thread.sleep(900_000);
+            } catch (IOException e) {
+                System.out.println("Error in automated cancel task: " + e.getMessage());
+                break;
+            } catch (InterruptedException e) {
+                System.out.println("Automated cancel task thread interrupted: " + e.getMessage());
+                break;
+            }
+        }
+    }
+
+    private static void processServerResponse(String response) {
+        System.out.println("Server response: " + response);
+        String[] parts = response.split(";", 3);
+        if (parts.length < 3) {
+            System.out.println("Invalid response format.");
+            return;
+        }
+        String status = parts[0];
+        String timestamp = parts[1];
+        String message = parts[2];
+
+        if (!status.equals("STATUS")) {
+            System.out.println("Unknown status: " + status);
+            return;
+        }
+
+        if (message.startsWith("QUEUED:")) {
+            try {
+                int taskId = Integer.parseInt(message.split("ID ")[1]); // FIXED: Robust task ID parsing
+                synchronized (taskIds) {
+                    taskIds.add(taskId);
+                }
+                System.out.println("Task queued with ID: " + taskId);
+            } catch (NumberFormatException e) {
+                System.out.println("Error parsing task ID: " + e.getMessage());
+            }
+        } else if (message.startsWith("EXECUTING:")) {
+            System.out.println("Task is executing: " + message);
+        } else if (message.startsWith("COMPLETED:") || message.startsWith("ERROR:")) {
+            System.out.println(message.startsWith("COMPLETED:") ? "Task completed: " + message : "Task failed: " + message);
+            if (message.contains("TaskID ")) {
+                try {
+                    int taskId = Integer.parseInt(message.split("TaskID ")[1].split(" ")[0]);
+                    synchronized (taskIds) {
+                        taskIds.remove((Integer) taskId);
+                    }
+                } catch (Exception e) {
+                    System.out.println("Error removing task ID: " + e.getMessage());
+                }
+            }
+        } else if (message.startsWith("REJECTED:")) {
+            System.out.println("Task rejected: " + message);
+        } else if (message.startsWith("Pending Tasks:") || message.startsWith("History:")) {
+            System.out.println(message);
+        } else {
+            System.out.println("Unknown message: " + message);
+        }
+    }
+
+    private static void runLocalScripts() {
+        while (true) {
+            for (String script : LOCAL_SCRIPTS) {
+                try {
+                    System.out.println("Executing local script: " + script);
+                    ProcessBuilder pb = new ProcessBuilder("bash", SCRIPTS_DIR + script); // FIXED: Correct scripts, assume no sudo
+                    pb.redirectErrorStream(true);
+                    Process process = pb.start();
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        System.out.println(script + " output: " + line);
+                    }
+                    int exitCode = process.waitFor();
+                    System.out.println(script + " completed with exit code: " + exitCode);
+                } catch (IOException | InterruptedException e) {
+                    System.out.println("Error executing " + script + ": " + e.getMessage());
+                }
+            }
+            try {
+                Thread.sleep(600_000);
+            } catch (InterruptedException e) {
+                System.out.println("Local script thread interrupted: " + e.getMessage());
+            }
+        }
+    }
+}

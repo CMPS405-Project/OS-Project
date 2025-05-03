@@ -1,0 +1,115 @@
+import java.io.*;
+import java.net.*;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+
+public class NetworkServiceThread extends Thread {
+    // Get script location from system property or use default
+    private final String script = System.getProperty("NETWORK_SCRIPT_PATH", 
+                                "/home/vm1_server/CMPS405_Project/VM1_Server/Network.sh");
+    private final InetAddress client1ip;
+    private final InetAddress client2ip;
+
+    public NetworkServiceThread(InetAddress client1ip, InetAddress client2ip) {
+        super();
+        this.client1ip = client1ip;
+        this.client2ip = client2ip;
+    }
+
+    @Override
+    public void run() {
+        BufferedReader terminalReader = null;
+        Process networkTest = null;
+        
+        try {
+            // Validate script exists
+            if (!Files.exists(Paths.get(script))) {
+                System.out.println("Error: Network script not found at: " + script);
+                return;
+            }
+            
+            // Validate IP addresses
+            validateIpAddress(client1ip.getHostAddress());
+            validateIpAddress(client2ip.getHostAddress());
+            
+            System.out.println("Starting NetworkService thread");
+            System.out.println("Script path: " + script);
+            System.out.println("Client1 IP: " + client1ip.getHostAddress());
+            System.out.println("Client2 IP: " + client2ip.getHostAddress());
+
+            // Execute the command: bash /path/to/script.sh client1IP client2IP
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                "bash", 
+                script, 
+                client1ip.getHostAddress(), 
+                client2ip.getHostAddress()
+            );
+
+            // Merge standard output and standard error
+            processBuilder.redirectErrorStream(true);
+
+            // Run the script
+            System.out.println("Executing shell script...");
+            networkTest = processBuilder.start();
+
+            // Read from the process output stream
+            terminalReader = new BufferedReader(new InputStreamReader(networkTest.getInputStream()));
+            String terminalOutput;
+            while ((terminalOutput = terminalReader.readLine()) != null) {
+                System.out.println("[Network Test] " + terminalOutput);
+            }
+
+            // Wait for the shell script process to complete with a timeout
+            System.out.println("Waiting for script to complete...");
+            
+            // Set up a timeout for waiting
+            boolean completed = networkTest.waitFor(120, java.util.concurrent.TimeUnit.SECONDS);
+            
+            if (completed) {
+                int exitCode = networkTest.exitValue();
+                System.out.println("Network.sh script execution completed with exit code: " + exitCode);
+            } else {
+                System.out.println("Network.sh script execution timed out, forcing termination");
+                networkTest.destroyForcibly();
+            }
+
+        } catch (Exception e) {
+            System.out.println("Error in NetworkService:");
+            e.printStackTrace();
+        } finally {
+            closeQuietly(terminalReader);
+            
+            if (networkTest != null && networkTest.isAlive()) {
+                networkTest.destroyForcibly();
+            }
+        }
+    }
+    
+    // Helper method to validate IP address format to prevent command injection
+    private void validateIpAddress(String ip) throws IllegalArgumentException {
+        if (ip == null || ip.isEmpty()) {
+            throw new IllegalArgumentException("IP address cannot be null or empty");
+        }
+        
+        // Basic regex for IPv4 validation
+        String ipRegex = "^([01]?\\d\\d?|2[0-4]\\d|25[0-5])\\."
+                + "([01]?\\d\\d?|2[0-4]\\d|25[0-5])\\."
+                + "([01]?\\d\\d?|2[0-4]\\d|25[0-5])\\."
+                + "([01]?\\d\\d?|2[0-4]\\d|25[0-5])$";
+                
+        if (!ip.matches(ipRegex)) {
+            throw new IllegalArgumentException("Invalid IP address format: " + ip);
+        }
+    }
+    
+    // Helper method to close resources quietly
+    private void closeQuietly(Closeable resource) {
+        if (resource != null) {
+            try {
+                resource.close();
+            } catch (IOException e) {
+                // Silently ignore, we're already in cleanup
+            }
+        }
+    }
+}

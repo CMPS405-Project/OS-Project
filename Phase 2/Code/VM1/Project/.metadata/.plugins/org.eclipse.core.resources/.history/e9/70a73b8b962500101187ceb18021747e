@@ -1,0 +1,93 @@
+import java.io.*;
+import java.net.*;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.PriorityQueue;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import PriorityQueue.Task;
+public class Server {
+    private static ArrayList<Socket> mySockets = new ArrayList<>(); // Array to store sockets
+    private static PriorityQueue<Task> taskQueue = new PriorityQueue<>(); // Priority queue for tasks
+    private static AtomicInteger taskIdCounter = new AtomicInteger(1); // For unique Task IDs
+    private static final Object lock = new Object(); // For thread-safe operations
+    private static Map<String, LocalDateTime> clientLastSubmission = new HashMap<>(); // For rate limiting
+
+    public static void main(String args[]) {
+        try {
+            ServerSocket server = new ServerSocket(2500);
+            System.out.println("Server started on port 2500");
+
+            while (true) {  // loop to enforce the server to wait until 2 clients connect
+                do {
+                    if (mySockets.size() < 2)
+                        System.out.println("We Need Two clients to connect");
+                    Socket Client = server.accept();
+                    System.out.println("Client connected: " + Client.getInetAddress().getHostAddress());
+                    mySockets.add(Client);
+                } while (mySockets.size() < 2);
+
+                System.out.println("Testing the connection to both clients");
+
+                // Create a thread that will execute the shell script
+                NetworkService N1 = new NetworkService(
+                    mySockets.get(0).getInetAddress(),
+                    mySockets.get(1).getInetAddress(),
+                    new ArrayList<>(mySockets)
+                );
+                N1.start();
+
+                // Clear the sockets list for the next batch of connections
+                mySockets.clear();
+            }
+        } catch (IOException ioe) {
+            System.out.println("Error: " + ioe);
+        }
+    }
+
+    // Method to add a task to the PriorityQueue
+    public static String addTask(int serviceNumber, String clientName, int priority) {
+        synchronized (lock) {
+            // Validate priority
+            if (priority < 1 || priority > 3) {
+                return "STATUS;" + LocalDateTime.now() + ";REJECTED: Invalid priority.";
+            }
+
+            // Check rate limiting (5-minute rule)
+            LocalDateTime lastSubmission = clientLastSubmission.getOrDefault(clientName, LocalDateTime.MIN);
+            if (lastSubmission.plusMinutes(5).isAfter(LocalDateTime.now())) {
+                return "STATUS;" + LocalDateTime.now() + ";REJECTED: Rate limit exceeded.";
+            }
+
+            // Map service number to script name
+            String scriptName = getScriptName(serviceNumber);
+            if (scriptName == null) {
+                return "STATUS;" + LocalDateTime.now() + ";REJECTED: Invalid service number.";
+            }
+
+            // Create and add task to queue
+            int taskId = taskIdCounter.getAndIncrement();
+            Task task = new Task(serviceNumber, scriptName, clientName, priority, taskId);
+            taskQueue.add(task);
+
+            // Update last submission time for client
+            clientLastSubmission.put(clientName, LocalDateTime.now());
+
+            return "STATUS;" + LocalDateTime.now() + ";QUEUED: Task queued with ID " + taskId;
+        }
+    }
+
+    // Helper method to map service number to script name
+    private static String getScriptName(int serviceNumber) {
+        switch (serviceNumber) {
+            case 2001: return "user_setup.sh";
+            case 2002: return "dir_perms.sh";
+            case 2003: return "system_monitor.sh";
+            case 2004: return "file_audit.sh";
+            case 2005: return "MySQL_login_<USER_NAME>.sh";
+            default: return null;
+        }
+    }
+}

@@ -1,0 +1,40 @@
+import java.io.*;
+import java.net.*;
+import java.util.ArrayList;
+
+public class Server {
+    private static ArrayList<Socket> mySockets = new ArrayList<>(); // Array to store sockets  
+    
+    public static void main(String args[]) {
+        
+        try {
+            ServerSocket server = new ServerSocket(2500);
+            System.out.println("Server started on port 2500");
+            
+            while(true) {  // loop to enforce the server to wait until 2 clients wait
+                do {
+                    if (mySockets.size() < 2)
+                        System.out.println("We Need Two clients to connect");
+                    Socket Client = server.accept();
+                    System.out.println("Client connected: " + Client.getInetAddress().getHostAddress());
+                    mySockets.add(Client);
+                } while(mySockets.size() < 2);
+                
+                System.out.println("Testing the connection to both clients");
+                
+                // Create a thread that will execute the shell script
+                NetworkService N1 = new NetworkService(
+                    mySockets.get(0).getInetAddress(),
+                    mySockets.get(1).getInetAddress(),
+                    new ArrayList<>(mySockets)
+                );
+                N1.start();
+                
+                // Clear the sockets list for the next batch of connections
+                mySockets.clear();
+            }
+        } catch(IOException ioe) {
+            System.out.println("Error: " + ioe);
+        }
+    }
+}

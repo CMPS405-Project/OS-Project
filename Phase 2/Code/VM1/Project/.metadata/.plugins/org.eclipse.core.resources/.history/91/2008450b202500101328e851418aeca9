@@ -1,0 +1,53 @@
+
+import java.io.*;
+import java.net.InetAddress;
+public class NetworkService extends Thread{
+	String script = "/home/vm1_server/CMPS405_Project/VM1_Server/Task5/Network.sh";	// script location
+	InetAddress client1ip;
+	InetAddress client2ip;
+	BufferedReader terminalReader = null;
+	
+	public NetworkService(InetAddress client1ip,InetAddress client2ip) {
+		super();
+		this.client1ip = client1ip;
+		this.client2ip = client2ip;
+		
+	}
+	
+	public void run()
+	{
+		try {
+			// this will execute the command so it will build this: bash /home/vm1_server/CMPS405_Project/VM1_Server/Task5/Network.sh client1IP client2IP
+			ProcessBuilder processBuilder = new ProcessBuilder("bash",script,client1ip.getHostAddress(),client2ip.getHostAddress());
+			
+			processBuilder.redirectErrorStream(true); // Allow the standard output and standard error to be merged in one stream so that it read from only 1 stream
+			Process NetworkTest = processBuilder.start(); // run the script in the background, create a child process and return it which represent the running shell command
+
+			// will write the output in this stream
+			terminalReader = new  BufferedReader(new InputStreamReader (NetworkTest.getInputStream()));
+			
+			String terminaloutput = terminalReader.readLine();
+			while ( terminaloutput!= null){
+				System.out.println(terminaloutput);
+				terminaloutput = terminalReader.readLine();
+			}
+			NetworkTest.waitFor();	// wait the shell script process to complete
+		}
+		catch (Exception e) {
+			e.printStackTrace();
+		}
+		finally{
+				try {
+					if(terminalReader !=null)
+					terminalReader.close();
+				} 
+				catch (IOException e) {
+					e.printStackTrace();
+				}
+			
+		}//end of finally
+		
+	}//end of run
+	
+
+}
